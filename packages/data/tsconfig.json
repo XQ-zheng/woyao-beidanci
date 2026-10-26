@@ -1,5 +1,5 @@
 {
-  // 继承仓库基线（strict / bundler / verbatimModuleSyntax 等）。
+  // 继承仓库基线（strict / bundler / verbatimModuleSyntax / moduleDetection: force 等）。
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     // 数据层只跑在 Node 侧，不加载 DOM 类型：避免有人误用 window/fetch 之类
@@ -8,12 +8,7 @@
     // 需要 node 类型：`better-sqlite3` 用到的 `Buffer` 与 `globalThis.crypto`
     // 的声明都来自 @types/node。
     // （这不等于“允许 import node:*”——那条约束由 eslint 的 no-restricted-imports 强制。）
-    "types": ["node"],
-    // 基线用的是 `moduleDetection: force`，它会把 src/sql.d.ts 也当成模块，
-    // 从而让里面的 `declare module '*?raw'` 退化成模块增强、丢掉全局声明，
-    // `import x from './001_init.sql?raw'` 就会报 TS2307。
-    // 本包所有源码都有 import/export，改回 legacy 检测不影响任何真实文件的模块身份。
-    "moduleDetection": "legacy"
+    "types": ["node"]
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]

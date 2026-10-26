@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { AssessmentEvent } from './assessment';
 import {
+  ASSESSMENT_ALGORITHM_VERSION,
+  ASSESSMENT_WINDOW_DAYS,
   computeAssessmentComponents,
   evaluateAssessment,
   InvalidAssessmentInputError,
@@ -11,6 +13,7 @@ import {
   NEUTRAL_DUE_REVIEW_SCORE,
 } from './assessment';
 import type { Recognition } from './models';
+import { MS_PER_DAY } from './models';
 
 /** 固定评估时刻：2025-06-30T12:00:00Z。 */
 const NOW = new Date(Date.UTC(2025, 5, 30, 12, 0, 0));
@@ -294,6 +297,81 @@ describe('评估：窗口过滤与自评差异', () => {
     expect(components.recognitionRate).toBe(1);
     expect(components.accuracy).toBe(0);
     expect(result.suggestions.join(' ')).toContain('差异较大');
+  });
+});
+
+describe('评估结果的可追溯元信息（设计 §9）', () => {
+  it('algorithmVersion 等于核心常量 1.0.0', () => {
+    const result = evaluateAssessment(buildSamples(30, 2), 100, NOW);
+
+    expect(ASSESSMENT_ALGORITHM_VERSION).toBe('1.0.0');
+    expect(result.algorithmVersion).toBe(ASSESSMENT_ALGORITHM_VERSION);
+  });
+
+  it('generatedAt 与 windowEnd 都等于注入的 now（不调用 Date.now()）', () => {
+    const result = evaluateAssessment(buildSamples(30, 2), 100, NOW);
+
+    expect(result.generatedAt).toBe(NOW.toISOString());
+    expect(result.windowEnd).toBe(NOW.toISOString());
+    expect(Date.parse(result.generatedAt)).toBe(NOW.getTime());
+  });
+
+  it('windowStart = now − 90 天，且窗口跨度恰为 90 个 24 小时', () => {
+    const result = evaluateAssessment(buildSamples(30, 2), 100, NOW);
+
+    expect(ASSESSMENT_WINDOW_DAYS).toBe(90);
+    expect(result.windowStart).toBe(new Date(NOW.getTime() - 90 * MS_PER_DAY).toISOString());
+    expect(Date.parse(result.windowEnd) - Date.parse(result.windowStart)).toBe(90 * MS_PER_DAY);
+  });
+
+  it('换一个 now，元信息随之派生（证明是算出来的而不是写死的）', () => {
+    const otherNow = new Date(Date.UTC(2024, 0, 15, 3, 4, 5, 6));
+
+    const result = evaluateAssessment([], 10, otherNow);
+
+    expect(result.generatedAt).toBe('2024-01-15T03:04:05.006Z');
+    expect(result.windowEnd).toBe('2024-01-15T03:04:05.006Z');
+    expect(result.windowStart).toBe(
+      new Date(otherNow.getTime() - 90 * MS_PER_DAY).toISOString(),
+    );
+    expect(result.algorithmVersion).toBe(ASSESSMENT_ALGORITHM_VERSION);
+  });
+
+  it('窗口边界与统计口径一致：恰好落在 windowStart 的事件计入，早 1 毫秒的不计', () => {
+    const boundary = new Date(NOW.getTime() - ASSESSMENT_WINDOW_DAYS * MS_PER_DAY);
+    const inside = { ...makeEvent('w-in'), answeredAt: boundary.toISOString() };
+    const outside = {
+      ...makeEvent('w-out'),
+      answeredAt: new Date(boundary.getTime() - 1).toISOString(),
+    };
+
+    const result = evaluateAssessment([inside, outside], 10, NOW);
+
+    expect(result.windowStart).toBe(boundary.toISOString());
+    expect(result.validAnswers).toBe(1);
+    expect(result.distinctWords).toBe(1);
+  });
+
+  it('样本为空时也带完整的可追溯字段', () => {
+    const result = evaluateAssessment([], 100, NOW);
+
+    expect(result.algorithmVersion).toBe(ASSESSMENT_ALGORITHM_VERSION);
+    expect(result.generatedAt).toBe(NOW.toISOString());
+    expect(result.windowStart).toBe(new Date(NOW.getTime() - 90 * MS_PER_DAY).toISOString());
+    expect(result.windowEnd).toBe(NOW.toISOString());
+    expect(Object.keys(result).sort()).toEqual([
+      'algorithmVersion',
+      'confidence',
+      'coverage',
+      'distinctWords',
+      'generatedAt',
+      'level',
+      'score',
+      'suggestions',
+      'validAnswers',
+      'windowEnd',
+      'windowStart',
+    ]);
   });
 });
 

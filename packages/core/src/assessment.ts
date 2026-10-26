@@ -15,9 +15,13 @@
  * ```
  *
  * 样本门槛：至少 30 个不同词且至少 60 次有效作答，否则等级为 `INSUFFICIENT_SAMPLE`。
+ *
+ * 可追溯性（设计 §9）：结果同时带 `algorithmVersion`（口径版本号）、`generatedAt`
+ * （= 注入的 `now`）与 `windowStart`/`windowEnd`（本次统计的 90 天闭区间），
+ * 因此“这个分数是哪一版口径、算的是哪段时间”都能被复核。
  */
 
-import { parseIsoInstant } from './clock';
+import { parseIsoInstant, toIsoInstant } from './clock';
 import type { Recognition } from './models';
 import { MS_PER_DAY } from './models';
 
@@ -43,7 +47,15 @@ export type AssessmentLevel =
   | 'NEEDS_WORK'
   | 'INSUFFICIENT_SAMPLE';
 
-/** 评估结果（字段与任务契约一致）。 */
+/**
+ * 评估算法版本标识。
+ *
+ * 写进每次结果，便于解释“同一个分数是用哪一版口径算出来的”：
+ * 权重/窗口/门槛任一口径变化都必须提升此版本号（设计 §9 的可追溯性要求）。
+ */
+export const ASSESSMENT_ALGORITHM_VERSION = '1.0.0';
+
+/** 评估结果（字段与任务契约一致，另加 4 个可追溯字段）。 */
 export interface AssessmentResult {
   /** 0–100 的综合得分；样本为空时为 0。 */
   score: number;
@@ -59,6 +71,14 @@ export interface AssessmentResult {
   validAnswers: number;
   /** 面向用户的中文建议/说明（含“复习样本不足”等提示）。 */
   suggestions: string[];
+  /** 评分算法版本（`ASSESSMENT_ALGORITHM_VERSION`）。 */
+  algorithmVersion: string;
+  /** 本次评估的生成时刻（UTC ISO 8601 毫秒），恒等于调用方注入的 `now`。 */
+  generatedAt: string;
+  /** 分析窗口起点（闭区间，UTC ISO 8601 毫秒）= `now - 90 天`。 */
+  windowStart: string;
+  /** 分析窗口终点（闭区间，UTC ISO 8601 毫秒）= `now`。 */
+  windowEnd: string;
 }
 
 /**
@@ -379,12 +399,14 @@ function formatPercent(value: number): string {
  * 2. `A` 只在**有样本的子窗口**内加权（近 30 天 0.6 / 其余 0.4 按实际窗口归一），
  *    因此“只在今天做过题且全对”的用户 A 会是 100%，展示时应同时给出样本量。
  *
- * 窗口按 `90 × 24h` 固定毫秒计算（不按本地日历日），与实例时区无关。
+ * 窗口按 `90 × 24h` 固定毫秒计算（不按本地日历日），与实例时区无关；
+ * 结果里回写 `windowStart`/`windowEnd`/`generatedAt`/`algorithmVersion`，
+ * 让“这个分数是哪一版口径、算的是哪段时间”可被追溯（设计 §9）。
  *
  * @param events 该词库的作答事件。
  * @param deckSize 当前词库词数（用于 coverage）。
  * @param now 注入的当前时刻。
- * @returns 评估结果（含面向用户的建议）。
+ * @returns 评估结果（含面向用户的建议与可追溯元信息）。
  */
 export function evaluateAssessment(
   events: readonly AssessmentEvent[],
@@ -471,5 +493,10 @@ export function evaluateAssessment(
     distinctWords: components.distinctWords,
     validAnswers: components.validAnswers,
     suggestions,
+    algorithmVersion: ASSESSMENT_ALGORITHM_VERSION,
+    // 两者都从注入的 `now` 派生（绝不调用 `Date.now()`），因此结果可重放、可对账。
+    generatedAt: toIsoInstant(now),
+    windowStart: toIsoInstant(new Date(now.getTime() - ASSESSMENT_WINDOW_DAYS * MS_PER_DAY)),
+    windowEnd: toIsoInstant(now),
   };
 }

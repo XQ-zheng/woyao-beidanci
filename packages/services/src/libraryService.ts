@@ -11,12 +11,10 @@
  * 会让小词库里的常见词被误判成“高频”，这是需求里明确禁止的“虚报重要性”。
  */
 
-import { classifyFrequencyImportance, type FrequencyEntry } from '@woyao/core';
 import {
   LOCAL_OWNER_SCOPE,
   type DeckKind,
   type DeckRecord,
-  type FrequencyCorpusMeta,
   type WordRecord,
 } from '@woyao/data';
 
@@ -37,6 +35,7 @@ import {
   type FrequencyView,
 } from './dto';
 import { ServiceConflictError, ServiceNotFoundError, ServiceValidationError } from './errors';
+import { loadFrequencyLookup, toFrequencyView, type FrequencyLookup } from './frequencyView';
 import type { ServiceContext } from './ports';
 
 /** 词库服务契约。 */
@@ -74,30 +73,6 @@ export interface LibraryServiceOptions {
   readonly ownerScope?: string;
 }
 
-/** 一次词频查询的结果（避免为每个词都去读一遍整份语料）。 */
-interface FrequencyLookup {
-  readonly byWordId: ReadonlyMap<string, FrequencyEntry>;
-  readonly knownWordCount: number;
-  /**
-   * 语料级元信息。
-   *
-   * `null` 表示**该 (exam, corpusVersion) 没有任何频率行**；非 null 时
-   * `totalTokens` 仍可能是 `null`（导入方没给出语料总词数）。
-   * 这两种情况都不能编一个数字出来——UI 的“统计口径”宁可空着，也不能虚报。
-   */
-  readonly meta: FrequencyCorpusMeta | null;
-}
-
-/** 没有语料上下文时的词频视图（**不把未知当低频**）。 */
-const UNKNOWN_FREQUENCY: FrequencyView = {
-  importance: 'UNKNOWN',
-  frequency: null,
-  rank: null,
-  totalTokens: null,
-  corpusVersion: null,
-  sourceId: null,
-};
-
 /**
  * 判断一个异常是否是 SQLite 外键约束失败。
  *
@@ -125,57 +100,11 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
   const { context } = options;
   const ownerScope = options.ownerScope ?? LOCAL_OWNER_SCOPE;
 
-  /** 读一份语料，建成 `wordId → entry` 的索引。 */
-  async function loadFrequencyLookup(exam: string, corpusVersion: string): Promise<FrequencyLookup> {
-    // 两次读并行：逐词条目（分级要用）与语料级元信息（`totalTokens` 要用）。
-    const [entries, meta] = await Promise.all([
-      context.repos.words.listFrequencyEntries(exam, corpusVersion),
-      context.repos.words.getFrequencyCorpusMeta(exam, corpusVersion),
-    ]);
-    const byWordId = new Map<string, FrequencyEntry>();
-    for (const entry of entries) {
-      byWordId.set(entry.wordId, entry);
-    }
-    // 分母是**该语料版本里有频率的词条总数**，不是词库词数（见文件头注释）。
-    return { byWordId, knownWordCount: entries.length, meta };
+  /** 读一份语料（实现见 `frequencyView.ts`，与 `studyService` 共用同一份口径）。 */
+  async function loadLookup(exam: string, corpusVersion: string): Promise<FrequencyLookup> {
+    return loadFrequencyLookup(context.repos.words, exam, corpusVersion);
   }
 
-  /**
-   * 组装词频视图。
-   *
-   * @param lookup 语料索引；`null` 表示调用方没给 exam/corpusVersion。
-   * @param wordId 词条 id。
-   * @returns 词频视图。
-   */
-  function toFrequencyView(lookup: FrequencyLookup | null, wordId: string): FrequencyView {
-    if (lookup === null) {
-      return UNKNOWN_FREQUENCY;
-    }
-    const entry = lookup.byWordId.get(wordId) ?? null;
-    const importance = classifyFrequencyImportance(entry, lookup.knownWordCount);
-    if (entry === null) {
-      // 语料完整（分母 > 0）但这个词不在里面：按“未知”处理，不按“低频”处理。
-      return {
-        importance,
-        frequency: null,
-        rank: null,
-        totalTokens: null,
-        corpusVersion: null,
-        sourceId: null,
-      };
-    }
-    return {
-      importance,
-      frequency: entry.frequency,
-      rank: entry.rank ?? null,
-      // 语料级字段，取自 `frequency_entries.total_tokens`（整卷替换，所有行同值）。
-      // 词不在语料里时上面已经返回 null；这里 `meta` 理论上必然非 null（有 entry 就有行），
-      // 用可选链兜住“数据层将来改了聚合口径”的情况，而不是断言非空。
-      totalTokens: lookup.meta?.totalTokens ?? null,
-      corpusVersion: entry.corpusVersion,
-      sourceId: entry.sourceId,
-    };
-  }
 
   /** 行 → 摘要（词数按 `deck_words` 里未软删的行数算）。 */
   async function toDeckSummary(deck: DeckRecord): Promise<DeckSummary> {
@@ -360,7 +289,7 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       const words = await context.repos.words.listWordsByIds(wordIds);
       const lookup =
         validated.exam !== undefined && validated.corpusVersion !== undefined
-          ? await loadFrequencyLookup(validated.exam, validated.corpusVersion)
+          ? await loadLookup(validated.exam, validated.corpusVersion)
           : null;
 
       // 先并行取义项再按词序组装：`Promise.all` 保证结果顺序与入参一致。
@@ -474,7 +403,7 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
 
       const lookup =
         validated.exam !== undefined && validated.corpusVersion !== undefined
-          ? await loadFrequencyLookup(validated.exam, validated.corpusVersion)
+          ? await loadLookup(validated.exam, validated.corpusVersion)
           : null;
       const view = await toDeckWordView(word, toFrequencyView(lookup, word.id));
       return { ...view, created: existing === null };
@@ -486,7 +415,7 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       corpusVersion: string;
     }): Promise<FrequencyView> {
       const validated = parseOrThrow(getFrequencyInputSchema, input, '查询词频');
-      const lookup = await loadFrequencyLookup(validated.exam, validated.corpusVersion);
+      const lookup = await loadLookup(validated.exam, validated.corpusVersion);
       return toFrequencyView(lookup, validated.wordId);
     },
   };

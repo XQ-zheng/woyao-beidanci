@@ -18,6 +18,7 @@ import {
   createWordRepository,
   migrate,
   openDatabase,
+  type DeckKind,
   type SqliteDatabase,
   type SyncRepository,
   type LearningRepository,
@@ -52,10 +53,31 @@ export interface ServiceTestHarness {
   readonly nowIso: string;
   /** 播种一个来源行（`sources`），返回 id。 */
   seedSource(sourceId?: string): string;
-  /** 播种一个词条（无义项），返回 id。 */
-  seedWord(input: { id: string; lemma: string; ownerScope?: string }): string;
+  /** 播种一个词条（可带义项），返回 id。 */
+  seedWord(input: {
+    id: string;
+    lemma: string;
+    ownerScope?: string;
+    senses?: readonly SeedSense[];
+  }): string;
+  /** 播种一个词库，可顺手把词塞进去，返回 id。 */
+  seedDeck(input: {
+    id: string;
+    name: string;
+    kind?: DeckKind;
+    ownerScope?: string;
+    wordIds?: readonly string[];
+  }): string;
   /** 关闭连接。 */
   close(): void;
+}
+
+/** 播种义项时用到的字段（`sourceId` 由装配器统一补 `local-user`）。 */
+export interface SeedSense {
+  readonly pos: string;
+  readonly simpleZh: string;
+  readonly detailedZh?: string | null;
+  readonly contextText?: string | null;
 }
 
 /** 装配参数。 */
@@ -110,6 +132,18 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
      VALUES (?, 'LOCAL', 'DICTIONARY', ?, ?, ?)`,
   );
 
+  /** 义项需要一个来源（`word_senses.source_id` 有外键），播种时用 `local-user` 兜住。 */
+  const ensureSeedSource = (): string => {
+    const existing = db.prepare('SELECT id FROM sources WHERE id = ?').get('local-user') as
+      | { id: string }
+      | undefined;
+    if (existing !== undefined) {
+      return existing.id;
+    }
+    insertSource.run('local-user', '播种来源', nowIso, nowIso);
+    return 'local-user';
+  };
+
   return {
     db,
     sync,
@@ -122,15 +156,49 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
       return sourceId;
     },
 
-    seedWord(input: { id: string; lemma: string; ownerScope?: string }): string {
+    seedWord(input: {
+      id: string;
+      lemma: string;
+      ownerScope?: string;
+      senses?: readonly SeedSense[];
+    }): string {
+      const senses = input.senses ?? [];
+      const sourceId = senses.length > 0 ? ensureSeedSource() : 'local-user';
       sync.words.createWord({
         id: input.id,
         ownerScope: input.ownerScope ?? 'LOCAL',
         lemma: input.lemma,
-        senses: [],
+        senses: senses.map((sense) => ({
+          pos: sense.pos,
+          simpleZh: sense.simpleZh,
+          detailedZh: sense.detailedZh ?? null,
+          contextText: sense.contextText ?? null,
+          sourceId,
+        })),
         deviceId,
         now: parseIsoInstant(nowIso, 'now'),
       });
+      return input.id;
+    },
+
+    seedDeck(input: {
+      id: string;
+      name: string;
+      kind?: DeckKind;
+      ownerScope?: string;
+      wordIds?: readonly string[];
+    }): string {
+      sync.words.upsertDeck({
+        id: input.id,
+        ownerScope: input.ownerScope ?? 'LOCAL',
+        name: input.name,
+        kind: input.kind ?? 'CUSTOM',
+        deviceId,
+        now: parseIsoInstant(nowIso, 'now'),
+      });
+      for (const wordId of input.wordIds ?? []) {
+        sync.words.addDeckWord(input.id, wordId, deviceId, parseIsoInstant(nowIso, 'now'));
+      }
       return input.id;
     },
 

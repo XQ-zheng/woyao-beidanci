@@ -11,7 +11,7 @@
  *    数据层已经用 `requireIsoInstant` 拒绝其它格式，服务层**不再造兼容层**。
  */
 
-import type { TrainingMode } from '@woyao/core';
+import { zonedDateTimeParts, type TrainingMode } from '@woyao/core';
 import type { DeckKind } from '@woyao/data';
 import { z } from 'zod';
 
@@ -41,6 +41,12 @@ export const USER_SOURCE_NAME = '本地自建内容';
 
 /** 生词本词库的默认名字。 */
 export const NOTEBOOK_DECK_NAME = '生词本';
+
+/** 错词本单次返回的最大条数（再多 UI 也展示不过来，且每条都要查义项）。 */
+export const MISTAKES_LIMIT_MAX = 500;
+
+/** 错词本未指定 `limit` 时的默认条数。 */
+export const MISTAKES_LIMIT_DEFAULT = 50;
 
 /** 音量允许范围。 */
 export const VOLUME_MIN = 0;
@@ -103,19 +109,22 @@ export interface FrequencyView {
   readonly sourceId: string | null;
 }
 
+/** 一个义项对外展示所需的字段（词库列表与学习卡片共用同一种形状）。 */
+export interface SenseView {
+  readonly senseNo: number;
+  readonly pos: string;
+  readonly simpleZh: string;
+  readonly detailedZh: string | null;
+  readonly contextText: string | null;
+}
+
 /** 词库内的一个词（含义项与词频）。 */
 export interface DeckWordView {
   readonly wordId: string;
   readonly lemma: string;
   readonly phoneticUk: string | null;
   readonly phoneticUs: string | null;
-  readonly senses: {
-    readonly senseNo: number;
-    readonly pos: string;
-    readonly simpleZh: string;
-    readonly detailedZh: string | null;
-    readonly contextText: string | null;
-  }[];
+  readonly senses: SenseView[];
   readonly frequency: FrequencyView;
 }
 
@@ -327,3 +336,102 @@ export const createWordInputSchema = z.strictObject({
   exam: z.string().min(1, '考试标签不能为空').optional(),
   corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
 });
+
+/** 自我认识判断。 */
+export const recognitionSchema = z.enum(['KNOWN', 'UNKNOWN']);
+
+/**
+ * 时刻入参。
+ *
+ * **只接受 `Date` 实例，不接受字符串**：时间在服务层内部一律是 `Date`，
+ * 对外（IPC/UI）才序列化成 ISO 字符串。两处都收会让“到底谁负责解析”变成猜谜，
+ * 而解析失败的后果是算错到期时间。字符串入口只有数据层与 zod 的 ISO schema。
+ */
+export const instantInputSchema = z.date({ message: '必须是 Date 实例' });
+
+/** 开始会话入参。 */
+export const startSessionInputSchema = z.strictObject({
+  deckId: z.string().min(1, '词库 id 不能为空'),
+  now: instantInputSchema,
+  seed: z.string().min(1, '种子不能为空').optional(),
+  exam: z.string().min(1, '考试标签不能为空').optional(),
+  corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
+});
+
+/** 提交作答入参。 */
+export const submitAnswerInputSchema = z.strictObject({
+  sessionId: z.string().min(1, '会话 id 不能为空'),
+  deckId: z.string().min(1, '词库 id 不能为空'),
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  mode: trainingModeSchema,
+  prompt: z.string().min(1, '题干不能为空'),
+  // 允许空串：用户可以直接“不会”跳过，这时 answer 为空。
+  answer: z.string(),
+  isCorrect: z.boolean(),
+  recognition: recognitionSchema,
+  answeredAt: instantInputSchema,
+  durationMs: z.number().int('作答耗时必须是整数毫秒').min(0, '作答耗时不能为负').optional(),
+  eventId: z.string().min(1, '事件 id 不能为空').optional(),
+  exam: z.string().min(1, '考试标签不能为空').optional(),
+  corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
+});
+
+/** 结束会话入参。 */
+export const finishSessionInputSchema = z.strictObject({
+  sessionId: z.string().min(1, '会话 id 不能为空'),
+  now: instantInputSchema,
+});
+
+/** “此单词不再出现 / 恢复出现”入参。 */
+export const wordRefInputSchema = z.strictObject({
+  deckId: z.string().min(1, '词库 id 不能为空'),
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  now: instantInputSchema,
+});
+
+/** 水平评估入参。 */
+export const assessmentInputSchema = z.strictObject({
+  deckId: z.string().min(1, '词库 id 不能为空'),
+  now: instantInputSchema,
+});
+
+/** 日统计入参。 */
+export const dailyHistoryInputSchema = z.strictObject({
+  fromLocalDate: localDateSchema,
+  toLocalDate: localDateSchema,
+});
+
+/** 会话列表入参。 */
+export const isoRangeInputSchema = z.strictObject({
+  fromIso: isoInstantSchema,
+  toIso: isoInstantSchema,
+});
+
+/** 错词本入参。 */
+export const mistakesInputSchema = z.strictObject({
+  deckId: z.string().min(1, '词库 id 不能为空'),
+  limit: z
+    .number()
+    .int('数量必须是整数')
+    .min(1, '数量至少为 1')
+    .max(MISTAKES_LIMIT_MAX, `数量不能大于 ${MISTAKES_LIMIT_MAX}`)
+    .optional(),
+});
+
+/**
+ * 把时刻按指定 IANA 时区折算成本地日 `YYYY-MM-DD`。
+ *
+ * 为什么不用 `toISOString().slice(0, 10)`：那是 **UTC** 日期。同一时刻在
+ * `Asia/Shanghai` 与 `America/New_York` 下属于不同的学习日，日统计与评估必须用
+ * 用户日历日，否则“今天的任务”会在跨时区/跨零点时错位。
+ *
+ * @param instant 时刻。
+ * @param timeZone IANA 时区（由复习计划给出）。
+ * @returns 本地日字符串。
+ */
+export function toLocalDateString(instant: Date, timeZone: string): string {
+  const parts = zonedDateTimeParts(instant, timeZone);
+  const month = String(parts.month).padStart(2, '0');
+  const day = String(parts.day).padStart(2, '0');
+  return `${String(parts.year)}-${month}-${day}`;
+}

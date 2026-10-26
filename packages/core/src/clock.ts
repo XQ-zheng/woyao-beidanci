@@ -82,7 +82,23 @@ export class InvalidTimeZoneError extends Error {
 const partsFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 /**
+ * 纯 UTC 偏移写法（例如 `+08:00`、`-0500`、`+08`）。
+ *
+ * 这类标识虽然被新版 `Intl` 接受，但它没有 DST 规则、也不是计划要落库的标识，
+ * 一旦存进 `ReviewPlan.timeZone` 会让跨端结果随实现细节漂移，因此明确拒绝。
+ */
+const UTC_OFFSET_TIME_ZONE_PATTERN = /^[+-]\d{2}(?::?\d{2})?$/u;
+
+/**
+ * 允许的时区名形态：`UTC`、`Etc/UTC`、`America/Argentina/Buenos_Aires` 等
+ * IANA 名称（字母开头，可含数字、`_`、`+`、`-` 与 `/`）。
+ */
+const IANA_TIME_ZONE_PATTERN = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/u;
+
+/**
  * 取（并缓存）某个时区的分量格式化器；非法时区会抛 `InvalidTimeZoneError`。
+ *
+ * 校验顺序：先按形态拒绝纯偏移写法，再交给 `Intl` 判断时区数据库里是否存在。
  *
  * @param timeZone IANA 时区标识。
  * @returns 分量格式化器。
@@ -92,13 +108,17 @@ function partsFormatterOf(timeZone: string): Intl.DateTimeFormat {
   if (cached !== undefined) {
     return cached;
   }
-  if (typeof timeZone !== 'string' || timeZone.trim() === '') {
+  if (typeof timeZone !== 'string') {
+    throw new InvalidTimeZoneError(timeZone);
+  }
+  const trimmed = timeZone.trim();
+  if (trimmed === '' || UTC_OFFSET_TIME_ZONE_PATTERN.test(trimmed) || !IANA_TIME_ZONE_PATTERN.test(trimmed)) {
     throw new InvalidTimeZoneError(timeZone);
   }
   let formatter: Intl.DateTimeFormat;
   try {
     formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone,
+      timeZone: trimmed,
       hourCycle: 'h23',
       year: 'numeric',
       month: '2-digit',
@@ -115,7 +135,7 @@ function partsFormatterOf(timeZone: string): Intl.DateTimeFormat {
 }
 
 /**
- * 判断字符串是否是运行时认识的 IANA 时区。
+ * 判断字符串是否是运行时认识、且不是纯偏移写法的 IANA 时区。
  *
  * @param timeZone 待校验的时区标识。
  * @returns 是否合法。

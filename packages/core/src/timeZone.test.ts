@@ -4,7 +4,7 @@ import { isValidTimeZone, localWallTimeToInstant, zonedDateTimeParts, zonedDayNu
 import type { AnswerInput, LearningState, ReviewPlan } from './models';
 import { createDefaultReviewPlan, createInitialLearningState } from './models';
 import { buildDailyQueue } from './queue';
-import { nextLearningState } from './scheduler';
+import { nextLearningState, validateReviewPlan } from './scheduler';
 
 /**
  * 时区确定性测试。
@@ -53,6 +53,8 @@ describe('isValidTimeZone', () => {
     expect(isValidTimeZone('Asia/Shanghai')).toBe(true);
     expect(isValidTimeZone('America/New_York')).toBe(true);
     expect(isValidTimeZone('Australia/Lord_Howe')).toBe(true);
+    expect(isValidTimeZone('America/Argentina/Buenos_Aires')).toBe(true);
+    expect(isValidTimeZone('Etc/GMT+5')).toBe(true);
   });
 
   it('拒绝空值与未知时区', () => {
@@ -60,6 +62,23 @@ describe('isValidTimeZone', () => {
     expect(isValidTimeZone('   ')).toBe(false);
     expect(isValidTimeZone('Mars/Olympus')).toBe(false);
     expect(isValidTimeZone('Asia/Shanghai/Extra')).toBe(false);
+  });
+
+  it('拒绝纯 UTC 偏移写法（R1：运行时 Intl 会接受，但它没有 DST 规则、会漂移）', () => {
+    expect(isValidTimeZone('+08:00')).toBe(false);
+    expect(isValidTimeZone('-05:00')).toBe(false);
+    expect(isValidTimeZone('+0800')).toBe(false);
+    expect(isValidTimeZone('+08')).toBe(false);
+    expect(isValidTimeZone('-0530')).toBe(false);
+  });
+
+  it('计划时区为纯偏移写法时校验失败并指出字段', () => {
+    const result = validateReviewPlan(createDefaultReviewPlan('+08:00'));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues.map((issue) => issue.field)).toContain('timeZone');
+    }
   });
 });
 

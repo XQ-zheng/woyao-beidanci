@@ -18,8 +18,8 @@ export const appRoutes: readonly AppRoute[] = [
   { path: '/mistakes', label: '错词', summary: '累计答错的单词与最近错误信息' },
   { path: '/history', label: '历史', summary: '按日期、词库与训练模式查看学习记录' },
   { path: '/assessment', label: '水平评估', summary: '基于近期作答的可解释水平参考' },
-  { path: '/settings', label: '设置', summary: '每日计划、复习节点、训练模式与外观' },
   { path: '/account', label: '账号', summary: '登录、云同步与本地数据管理' },
+  { path: '/settings', label: '设置', summary: '每日计划、复习节点、训练模式与外观' },
 ];
 
 /** 默认落地页。 */

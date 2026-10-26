@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import react from '@vitejs/plugin-react';
@@ -11,9 +12,24 @@ const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 const workspaceSrc = (relativePath: string): string =>
   fileURLToPath(new URL(relativePath, import.meta.url));
 
+interface RootManifest {
+  readonly version: string;
+}
+
+/**
+ * 版本号只在根 package.json 维护一份，构建与测试时通过 define 注入到源码，
+ * 避免出现 package.json / index.html / 代码里三份各自漂移的版本号。
+ */
+const rootManifest = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as RootManifest;
+
 export default defineConfig({
   root: repoRoot,
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(rootManifest.version),
+  },
   resolve: {
     alias: [
       // 与 tsconfig.base.json 的 paths 保持一致，后续任务创建对应包后即可直接引用。

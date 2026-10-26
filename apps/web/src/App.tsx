@@ -9,28 +9,32 @@ import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import { ThemeProvider } from '@mui/material/styles';
 import type { ReactElement } from 'react';
-import { BrowserRouter, NavLink, useLocation } from 'react-router-dom';
+import { BrowserRouter, NavLink, useMatch } from 'react-router-dom';
 
 import { APP_NAME } from './bootstrap';
 import { AppRoutes } from './router';
-import { appRoutes } from './routes';
+import { appRoutes, type AppRoute } from './routes';
 import { appTheme } from './theme';
 
-function AppNavigation(): ReactElement {
-  const { pathname } = useLocation();
+function NavigationItem({ route }: { readonly route: AppRoute }): ReactElement {
+  // 用 router 自身的匹配结果判断选中，而不是比较 pathname 字符串：
+  // 后续出现 /today/xxx 这类子路由时，父级导航项依然保持高亮。
+  // `end: false` 表示允许匹配子路径。
+  const isActive = useMatch({ path: route.path, end: false }) !== null;
 
+  return (
+    <ListItemButton component={NavLink} to={route.path} selected={isActive}>
+      <ListItemText primary={route.label} />
+    </ListItemButton>
+  );
+}
+
+function AppNavigation(): ReactElement {
   return (
     <Box component="nav" aria-label="主要导航" className="p-2">
       <List>
         {appRoutes.map((route) => (
-          <ListItemButton
-            key={route.path}
-            component={NavLink}
-            to={route.path}
-            selected={pathname === route.path}
-          >
-            <ListItemText primary={route.label} />
-          </ListItemButton>
+          <NavigationItem key={route.path} route={route} />
         ))}
       </List>
     </Box>

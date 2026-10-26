@@ -84,7 +84,14 @@ describe('evaluateAssessment：样本门槛', () => {
     expect(result.suggestions.join(' ')).not.toContain('词库覆盖偏低');
     expect(result.suggestions.some((suggestion) => suggestion.startsWith('首要短板：'))).toBe(false);
     expect(result.suggestions.some((suggestion) => suggestion.startsWith('次要短板：'))).toBe(false);
-    expect(result.suggestions).toHaveLength(2);
+    // 语义断言而非计数（复审建议）：只允许“说明型”提示。将来新增一条说明型提示
+    // （例如“M 样本不足”）不需要改这条测试，而任何“短板型”输出都会让它失败。
+    expect(
+      result.suggestions.every(
+        (suggestion) =>
+          suggestion.startsWith('样本不足：') || suggestion.startsWith('复习样本不足：'),
+      ),
+    ).toBe(true);
   });
 
   it('不同词数不足 30 时不评等级', () => {

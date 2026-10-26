@@ -10,7 +10,9 @@
  * 本包面向 Node 侧（`better-sqlite3` 原生模块），不要在浏览器端 import。
  */
 
+export * from './associationRepository';
 export * from './connection';
+export * from './contentCacheRepository';
 export * from './errors';
 export * from './learningRepository';
 export * from './migrations';

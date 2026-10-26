@@ -1,0 +1,26 @@
+{
+  "name": "@woyao/services",
+  "version": "0.1.0",
+  "private": true,
+  "description": "我要背单词的应用服务层（异步端口、DTO 校验、设置与词库服务）",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@woyao/core": "*",
+    "@woyao/data": "*",
+    "zod": "^4.6.7"
+  }
+}

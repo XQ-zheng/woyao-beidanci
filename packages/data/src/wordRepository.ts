@@ -208,6 +208,14 @@ export interface WordRepository {
   upsertDeck(input: DeckInput): DeckRecord;
   getDeckById(id: string): DeckRecord | null;
   listDecks(ownerScope: string): DeckRecord[];
+  /**
+   * 软删除一个词库（5A 补）。
+   *
+   * 为什么必须是软删除而不是 `DELETE`：删除本身要能被同步到其他设备，
+   * 而且 `deck_words` / `learning_events` 里指向它的历史不该凭空消失。
+   * 对不存在或已删除的 id 是**空操作**（幂等），需要区分“找不到”的调用方自己先查。
+   */
+  deleteDeck(deckId: string, deviceId: string, now: Date): void;
   addDeckWord(deckId: string, wordId: string, deviceId: string, now: Date): void;
   removeDeckWord(deckId: string, wordId: string, deviceId: string, now: Date): void;
   listDeckWordIds(deckId: string): string[];
@@ -560,6 +568,11 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       WHERE owner_scope = ? AND deleted_at IS NULL
       ORDER BY created_at ASC, id ASC`,
   );
+  const softDeleteDeck = db.prepare(
+    `UPDATE decks
+        SET deleted_at = ?, updated_at = ?, device_id = ?, revision = revision + 1
+      WHERE id = ? AND deleted_at IS NULL`,
+  );
   const upsertDeckWord = db.prepare(
     `INSERT INTO deck_words (deck_id, word_id, added_at, updated_at, deleted_at, device_id, revision)
      VALUES (?, ?, ?, ?, NULL, ?, 0)
@@ -820,6 +833,21 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       const scope = assertValidOwnerScope(ownerScope);
       const rows = selectDecks.all(scope) as DeckRow[];
       return rows.map(toDeckRecord);
+    },
+
+    deleteDeck(deckId: string, deviceId: string, now: Date): void {
+      const id = requireNonEmptyString(deckId, 'deckId');
+      const device = requireNonEmptyString(deviceId, 'deviceId');
+      const nowIso = toIsoInstant(now);
+      runInTransaction(
+        db,
+        () => {
+          // 已经是删除状态时这条 UPDATE 不命中任何行，因此重复调用是幂等的
+          // （也不会把 revision 一直往上推，避免同步侧看到无穷变更）。
+          softDeleteDeck.run(nowIso, nowIso, device, id);
+        },
+        { mode: 'IMMEDIATE' },
+      );
     },
 
     addDeckWord(deckId: string, wordId: string, deviceId: string, now: Date): void {

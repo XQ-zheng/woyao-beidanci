@@ -1,0 +1,18 @@
+{
+  // 继承仓库基线（strict / bundler / verbatimModuleSyntax / moduleDetection: force 等）。
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // 服务层跑在 Node 侧外壳里（Electron 主进程 / 移动端 WebView 的 JS 引擎），
+    // 但同样**不加载 DOM 类型**：服务层不许碰 window / fetch / localStorage。
+    "lib": ["ES2022"],
+    // 需要 node 类型：依赖链上的 `@woyao/data` 用 `Buffer` 与 `globalThis.crypto`，
+    // 这些声明来自 @types/node。这不等于“允许 import node:*”——那条约束由 eslint 强制。
+    "types": ["node"]
+  },
+  // `../data/src/sql.d.ts` 必须显式列进来：`@woyao/data` 是“源码即产物”的工作区包，
+  // 它的迁移 SQL 通过 `?raw` 内联，而那份 `declare module '*?raw'` 在 data 的 src 下、
+  // 不在本包的 include 范围内。不清进来，本包 tsc 会顺着 import 走进 data 的 migrations/index.ts，
+  // 然后报 TS2307（找不到 `./001_init.sql?raw`）——这个报错和 services 的代码毫无关系，很难查。
+  "include": ["src", "../data/src/sql.d.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+}

@@ -23,6 +23,15 @@ const coreSourceFiles = ['packages/core/src/**/*.ts'];
  */
 const dataSourceFiles = ['packages/data/src/**/*.ts'];
 
+/**
+ * 服务层源码：只做编排，**不得**碰平台 API。
+ *
+ * 平台能力必须走端口（`Clock` / `IdGeneratorPort` / `DeviceInfoPort` / `LoggerPort`），
+ * 这样同一套服务能在 Electron 主进程、移动端 WebView、以及单元测试里跑出完全一致的结果。
+ * 一旦有人在这里 `import 'node:fs'` 或 `fetch(...)`，移动端要重写的不只是一个函数。
+ */
+const servicesSourceFiles = ['packages/services/src/**/*.ts'];
+
 /** 构建与检查工具的配置文件：这些才真正运行在 Node 里。 */
 const toolingConfigFiles = [
   '**/*.config.{js,mjs,cjs,ts,mts,cts}',
@@ -121,6 +130,41 @@ export default tseslint.config(
               ],
               message:
                 'packages/data 的数据层不得导入 Node 内置模块：迁移 SQL 用 ?raw 内联，时间与 ID 由调用方注入或交给 SQLite，平台能力放到 Electron/Capacitor 适配层。',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: servicesSourceFiles,
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                'node:*',
+                'fs',
+                'fs/promises',
+                'path',
+                'os',
+                'process',
+                'crypto',
+                'child_process',
+                'http',
+                'https',
+                'net',
+                'worker_threads',
+                'electron',
+                '@capacitor/*',
+              ],
+              message:
+                'packages/services 只做编排：不得导入 Node 内置模块、Electron 或 Capacitor。平台能力（时钟/id/设备号/日志/网络）请通过 ports 注入。',
             },
           ],
         },

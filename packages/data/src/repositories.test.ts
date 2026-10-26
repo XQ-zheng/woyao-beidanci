@@ -371,6 +371,33 @@ describe('词库与收藏', () => {
     expect(repo.listDeckWordIds(deck.id)).toEqual([word.id]);
     expect(countRows(db, 'deck_words')).toBe(1);
   });
+
+  it('deleteDeck 是软删：listDecks 不再返回、词库行与词库里的词都还在；重复删除是空操作', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    const deck = repo.upsertDeck(makeDeckInput());
+    const word = repo.createWord(makeWordInput());
+    repo.addDeckWord(deck.id, word.id, 'dev-1', NOW);
+
+    repo.deleteDeck(deck.id, 'dev-1', LATER);
+
+    expect(repo.listDecks('LOCAL')).toEqual([]);
+    expect(repo.getDeckById(deck.id)).toBeNull();
+    // 软删：行还在（deleted_at 有值），词库里的词也还在——删除词库不等于删词。
+    expect(countRows(db, 'decks')).toBe(1);
+    expect(repo.listDeckWordIds(deck.id)).toEqual([word.id]);
+    const deleted = db.prepare('SELECT deleted_at, revision FROM decks WHERE id = ?').get(deck.id) as {
+      deleted_at: string | null;
+      revision: number;
+    };
+    expect(deleted.deleted_at).toBe(LATER.toISOString());
+    expect(deleted.revision).toBe(1);
+
+    // 幂等：已经删了再删一次，不命中任何行，revision 不再自增。
+    repo.deleteDeck(deck.id, 'dev-1', new Date('2025-01-05T00:00:00.000Z'));
+    const after = db.prepare('SELECT revision FROM decks WHERE id = ?').get(deck.id) as { revision: number };
+    expect(after.revision).toBe(1);
+  });
 });
 
 describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {

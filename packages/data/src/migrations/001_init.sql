@@ -172,6 +172,8 @@ CREATE TABLE IF NOT EXISTS learning_events (
 CREATE INDEX IF NOT EXISTS idx_learning_events_user_word ON learning_events (user_word_id, answered_at);
 CREATE INDEX IF NOT EXISTS idx_learning_events_answered ON learning_events (answered_at);
 CREATE INDEX IF NOT EXISTS idx_learning_events_session ON learning_events (session_id);
+-- 日统计（learning_events 按 local_date 分组）走这条索引，否则每次开统计页都全表扫。
+CREATE INDEX IF NOT EXISTS idx_learning_events_local_date ON learning_events (local_date);
 
 -- 学习会话：完成统计与历史快照。
 CREATE TABLE IF NOT EXISTS study_sessions (
@@ -192,12 +194,15 @@ CREATE TABLE IF NOT EXISTS study_sessions (
 CREATE INDEX IF NOT EXISTS idx_study_sessions_deck_date ON study_sessions (deck_id, local_date);
 
 -- 键值设置：每键独立冲突（同步按 key 合并，而不是整表覆盖）。
+-- `deleted_at` 是**软删除**：删除本身也要能同步给其他设备，
+-- 直接 DELETE 会让对端永远不知道自己该删这个键。
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   device_id TEXT NOT NULL DEFAULT '',
-  revision INTEGER NOT NULL DEFAULT 0
+  revision INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT
 );
 
 -- 多学习时段；跨午夜的时段由应用层拆成两条。
@@ -248,7 +253,8 @@ CREATE TABLE IF NOT EXISTS frequency_entries (
   exam TEXT NOT NULL DEFAULT 'ALL',
   corpus_version TEXT NOT NULL,
   frequency INTEGER NOT NULL CHECK (frequency >= 0),
-  total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+  -- 语料总词数：可为 NULL（来源没给出时宁可空着，也不写 0 冒充“统计过”）。
+  total_tokens INTEGER CHECK (total_tokens IS NULL OR total_tokens >= 0),
   rank INTEGER CHECK (rank IS NULL OR rank >= 1),
   equal_count INTEGER NOT NULL DEFAULT 1 CHECK (equal_count >= 1),
   source_id TEXT NOT NULL REFERENCES sources (id),

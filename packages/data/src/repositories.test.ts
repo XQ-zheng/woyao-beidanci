@@ -1,49 +1,77 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { LearningState } from '@woyao/core';
+import { createInitialLearningState } from '@woyao/core';
 
 import type { SqliteDatabase } from './connection';
-import { migrate, openDatabase } from './connection';
+import { closeDatabase, migrate, openDatabase } from './connection';
 import {
   FrequencyCorpusMismatchError,
+  InvalidOwnerScopeError,
   InvalidRepositoryInputError,
+  RepositoryInvariantError,
 } from './errors';
-import type { FrequencyCorpusInput, LearningEventRecord } from './index';
+import type {
+  DeckInput,
+  FrequencyCorpusEntry,
+  FrequencyCorpusInput,
+  LearningEventRecord,
+  PlanWindowRecord,
+  WordInput,
+} from './index';
 import {
+  LOCAL_OWNER_SCOPE,
+  accountOwnerScope,
   createLearningRepository,
   createSettingsRepository,
+  createSyncRepository,
   createWordRepository,
+  makeUserWordId,
 } from './index';
+
+/** 本文件创建的连接，`afterEach` 统一关闭。 */
+const openDatabases: SqliteDatabase[] = [];
 
 /** 迁移过的内存库。 */
 function createDatabase(): SqliteDatabase {
   const db = openDatabase(':memory:');
-  migrate(db, { now: new Date('2025-01-01T00:00:00.000Z') });
+  migrate(db);
+  openDatabases.push(db);
   return db;
 }
 
-/** 造一个词库（`learning_state` 有外键，必须先有 deck）。 */
-function seedDeck(db: SqliteDatabase, deckId = 'deck-1'): void {
+/** 两个注入时刻（避免任何断言依赖真实时钟）。 */
+const NOW = new Date('2025-01-01T00:00:00.000Z');
+const LATER = new Date('2025-01-02T00:00:00.000Z');
+
+/** 造一个来源行（`word_senses.source_id` / `frequency_entries.source_id` 都有外键）。 */
+function seedSource(db: SqliteDatabase, sourceId = 'src-1'): void {
   db.prepare(
-    `INSERT INTO decks (id, owner_scope, name, kind, created_at, updated_at)
-     VALUES (?, 'LOCAL', ?, 'BUILTIN', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
-  ).run(deckId, `词库-${deckId}`);
+    `INSERT INTO sources (id, owner_scope, type, name, created_at, updated_at)
+     VALUES (?, 'LOCAL', 'DICTIONARY', ?, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+  ).run(sourceId, `来源-${sourceId}`);
 }
 
-/** 造一条学习状态。 */
-function makeState(overrides: Partial<LearningState> = {}): LearningState {
+/** 造一条词条输入。 */
+function makeWordInput(overrides: Partial<WordInput> = {}): WordInput {
   return {
-    userWordId: 'deck-1:w-1',
-    deckId: 'deck-1',
-    wordId: 'w-1',
-    stage: -1,
-    dueAt: '2025-02-01T01:00:00.000Z',
-    lastReviewedAt: null,
-    correctCount: 0,
-    wrongCount: 0,
-    streakCorrect: 0,
-    weight: 1,
-    suppressedAt: null,
+    ownerScope: LOCAL_OWNER_SCOPE,
+    lemma: 'abandon',
+    senses: [],
+    deviceId: 'dev-1',
+    now: NOW,
+    ...overrides,
+  };
+}
+
+/** 造一条词库输入。 */
+function makeDeckInput(overrides: Partial<DeckInput> = {}): DeckInput {
+  return {
+    ownerScope: LOCAL_OWNER_SCOPE,
+    name: '默认词库',
+    kind: 'BUILTIN',
+    deviceId: 'dev-1',
+    now: NOW,
     ...overrides,
   };
 }
@@ -53,8 +81,6 @@ function makeEvent(overrides: Partial<LearningEventRecord> = {}): LearningEventR
   return {
     eventId: 'evt-1',
     userWordId: 'deck-1:w-1',
-    deckId: 'deck-1',
-    wordId: 'w-1',
     sessionId: 'sess-1',
     mode: 'EN_TO_ZH',
     prompt: 'abandon',
@@ -67,472 +93,770 @@ function makeEvent(overrides: Partial<LearningEventRecord> = {}): LearningEventR
     localDate: '2025-01-05',
     timeZone: 'Asia/Shanghai',
     durationMs: 3200,
+    deviceId: 'dev-1',
+    syncedAt: null,
     ...overrides,
   };
 }
 
-/** 造一份自洽的词频语料（2 个词并列在 rank 1）。 */
-function makeCorpus(
-  overrides: Partial<FrequencyCorpusInput> = {},
-): FrequencyCorpusInput {
+/** 造一条学习状态。 */
+function makeState(overrides: Partial<LearningState> = {}): LearningState {
   return {
-    corpusVersion: 'ngsl-1.2',
-    sourceId: 'src-ngsl',
-    exam: 'CET4',
-    knownWordCount: 2,
-    entries: [
-      { wordId: 'w-1', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 2 },
-      { wordId: 'w-2', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 2 },
-    ],
-    now: '2025-01-01T00:00:00.000Z',
+    ...createInitialLearningState({
+      userWordId: 'deck-1:w-1',
+      deckId: 'deck-1',
+      wordId: 'w-1',
+      dueAt: '2025-02-01T01:00:00.000Z',
+    }),
     ...overrides,
   };
 }
 
-/** 建库 + 词库 + 两个词 + 语料来源，供词频测试使用。 */
-function seedForFrequency(): {
-  db: SqliteDatabase;
-  words: ReturnType<typeof createWordRepository>;
-} {
-  const db = createDatabase();
-  seedDeck(db);
-  const words = createWordRepository(db);
-  words.createWord({ id: 'w-1', lemma: 'abandon', now: '2025-01-01T00:00:00.000Z' });
-  words.createWord({ id: 'w-2', lemma: 'ability', now: '2025-01-01T00:00:00.000Z' });
-  db.prepare(
-    `INSERT INTO sources (id, owner_scope, type, name, created_at, updated_at)
-     VALUES ('src-ngsl', 'LOCAL', 'FREQUENCY', 'NGSL', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
-  ).run();
-  return { db, words };
+/** 数一张表的行数。 */
+function countRows(db: SqliteDatabase, table: string): number {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+  return row.n;
 }
 
-describe('createWord：幂等与标准化', () => {
-  it('同一词形重复导入返回同一条记录，不撞唯一键', () => {
+afterEach(() => {
+  while (openDatabases.length > 0) {
+    const db = openDatabases.pop();
+    if (db !== undefined) {
+      closeDatabase(db);
+    }
+  }
+});
+
+describe('createWord：标准化与幂等', () => {
+  it('标准化词形但保留原词形大小写，并写入同步元数据', () => {
     const db = createDatabase();
     const repo = createWordRepository(db);
 
-    const first = repo.createWord({ lemma: 'abandon', now: '2025-01-01T00:00:00.000Z' });
-    const second = repo.createWord({ lemma: 'abandon', now: '2025-01-02T00:00:00.000Z' });
+    const word = repo.createWord(makeWordInput({ lemma: '  Abandon ', deviceId: 'dev-9' }));
+
+    expect(word.normalizedLemma).toBe('abandon');
+    expect(word.lemma).toBe('Abandon');
+    expect(word.ownerScope).toBe(LOCAL_OWNER_SCOPE);
+    expect(word.deviceId).toBe('dev-9');
+    expect(word.revision).toBe(0);
+    expect(word.deletedAt).toBeNull();
+    expect(word.createdAt).toBe(NOW.toISOString());
+  });
+
+  it('同一词形重复导入返回同一条记录：createdAt 不变、updatedAt 前移、revision 自增', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+
+    const first = repo.createWord(makeWordInput({ lemma: 'abandon' }));
+    const second = repo.createWord(makeWordInput({ lemma: 'ABANDON', now: LATER }));
 
     expect(second.id).toBe(first.id);
-    expect(second.createdAt).toBe('2025-01-01T00:00:00.000Z');
-    expect(second.updatedAt).toBe('2025-01-02T00:00:00.000Z');
-    const count = db.prepare('SELECT COUNT(*) AS n FROM words').get() as { n: number };
-    expect(count.n).toBe(1);
+    expect(second.createdAt).toBe(NOW.toISOString());
+    expect(second.updatedAt).toBe(LATER.toISOString());
+    expect(second.revision).toBe(1);
+    expect(countRows(db, 'words')).toBe(1);
   });
 
-  it('大小写与首尾/连续空白都归一到同一个词条', () => {
+  it('义项按 (wordId, senseNo, sourceId) upsert：重复导入是更新而不是插入重复义项', () => {
+    const db = createDatabase();
+    seedSource(db);
+    const repo = createWordRepository(db);
+
+    const first = repo.createWord(
+      makeWordInput({ senses: [{ pos: 'v.', simpleZh: '放弃', sourceId: 'src-1' }] }),
+    );
+    const second = repo.createWord(
+      makeWordInput({
+        now: LATER,
+        senses: [{ pos: 'v.', simpleZh: '放弃；抛弃', sourceId: 'src-1' }],
+      }),
+    );
+
+    expect(second.id).toBe(first.id);
+    const senses = repo.listSenses(second.id);
+    expect(senses).toHaveLength(1);
+    expect(senses[0]?.simpleZh).toBe('放弃；抛弃');
+    expect(senses[0]?.senseNo).toBe(1);
+    expect(senses[0]?.revision).toBe(1);
+  });
+
+  it('senseNo 缺省按数组序 1..n，listSenses 按 senseNo 升序且排除软删', () => {
+    const db = createDatabase();
+    seedSource(db);
+    const repo = createWordRepository(db);
+
+    const word = repo.createWord(
+      makeWordInput({
+        senses: [
+          { pos: 'n.', simpleZh: '能力', sourceId: 'src-1' },
+          { pos: 'v.', simpleZh: '放弃', sourceId: 'src-1' },
+        ],
+      }),
+    );
+
+    expect(repo.listSenses(word.id).map((sense) => sense.senseNo)).toEqual([1, 2]);
+
+    db.prepare("UPDATE word_senses SET deleted_at = ? WHERE sense_no = 2").run(NOW.toISOString());
+    expect(repo.listSenses(word.id).map((sense) => sense.simpleZh)).toEqual(['能力']);
+  });
+
+  it('getWordByLemma 按归属范围隔离；getWordById 对软删词返回 null', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    const local = repo.createWord(makeWordInput({ ownerScope: LOCAL_OWNER_SCOPE }));
+    const account = repo.createWord(makeWordInput({ ownerScope: accountOwnerScope('u1') }));
+
+    expect(local.id).not.toBe(account.id);
+    expect(repo.getWordByLemma('abandon', LOCAL_OWNER_SCOPE)?.id).toBe(local.id);
+    expect(repo.getWordByLemma('  ABANDON ', accountOwnerScope('u1'))?.id).toBe(account.id);
+
+    repo.createWord(makeWordInput({ lemma: 'ability' }));
+    const ability = repo.getWordByLemma('ability', LOCAL_OWNER_SCOPE);
+    expect(ability).not.toBeNull();
+    db.prepare('UPDATE words SET deleted_at = ? WHERE id = ?').run(NOW.toISOString(), ability?.id);
+    expect(repo.getWordById(ability?.id ?? '')).toBeNull();
+  });
+
+  it('listWordsByIds 保持入参顺序、缺失与软删的跳过', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    const abandon = repo.createWord(makeWordInput({ lemma: 'abandon' }));
+    const ability = repo.createWord(makeWordInput({ lemma: 'ability' }));
+    const absent = repo.createWord(makeWordInput({ lemma: 'absent' }));
+
+    expect(repo.listWordsByIds([absent.id, abandon.id, 'missing', ability.id]).map((w) => w.id)).toEqual(
+      [absent.id, abandon.id, ability.id],
+    );
+
+    db.prepare('UPDATE words SET deleted_at = ? WHERE id = ?').run(NOW.toISOString(), ability.id);
+    expect(repo.listWordsByIds([ability.id, abandon.id]).map((w) => w.id)).toEqual([abandon.id]);
+  });
+
+  it('归属范围只允许 BUILTIN / LOCAL / acct:<id>（自创形态会让隔离形同虚设）', () => {
     const db = createDatabase();
     const repo = createWordRepository(db);
 
-    const created = repo.createWord({ lemma: 'Abandon', now: '2025-01-01T00:00:00.000Z' });
-
-    expect(created.normalizedLemma).toBe('abandon');
-    expect(created.lemma).toBe('Abandon');
-    expect(repo.getWordByLemma('  abandon ')?.id).toBe(created.id);
-    expect(repo.getWordByLemma('ice  cream')).toBeNull();
+    expect(() => repo.createWord(makeWordInput({ ownerScope: 'account-1' }))).toThrow(
+      InvalidOwnerScopeError,
+    );
+    expect(() => repo.createWord(makeWordInput({ ownerScope: '' }))).toThrow(InvalidOwnerScopeError);
+    expect(accountOwnerScope('u1')).toBe('acct:u1');
+    expect(() => accountOwnerScope('  ')).toThrow(InvalidOwnerScopeError);
   });
 
-  it('getWordByLemma 按 ownerScope 隔离：不同账号互不可见', () => {
+  it('非法输入抛 InvalidRepositoryInputError（不是静默写脏数据）', () => {
     const db = createDatabase();
     const repo = createWordRepository(db);
 
-    repo.createWord({ lemma: 'abandon', ownerScope: 'account-a', now: '2025-01-01T00:00:00.000Z' });
-
-    expect(repo.getWordByLemma('abandon', 'account-a')).not.toBeNull();
-    expect(repo.getWordByLemma('abandon', 'account-b')).toBeNull();
-    expect(repo.getWordByLemma('abandon')).toBeNull();
-  });
-
-  it('义项按 senseNo 排序，且重复导入不会重复插入', () => {
-    const db = createDatabase();
-    const repo = createWordRepository(db);
-
-    const word = repo.createWord({
-      lemma: 'abandon',
-      now: '2025-01-01T00:00:00.000Z',
-      senses: [
-        { senseNo: 2, pos: 'v.', simpleZh: '抛弃' },
-        { senseNo: 1, pos: 'v.', simpleZh: '放弃' },
-      ],
-    });
-    repo.createWord({
-      lemma: 'abandon',
-      now: '2025-01-02T00:00:00.000Z',
-      senses: [{ senseNo: 1, pos: 'v.', simpleZh: '放弃' }],
-    });
-
-    const senses = repo.listSenses(word.id);
-    expect(senses.map((sense) => sense.senseNo)).toEqual([1, 2]);
-    expect(senses.map((sense) => sense.simpleZh)).toEqual(['放弃', '抛弃']);
-  });
-
-  it('空词形与空释义抛类型化错误', () => {
-    const db = createDatabase();
-    const repo = createWordRepository(db);
-
-    expect(() => repo.createWord({ lemma: '   ' })).toThrow(InvalidRepositoryInputError);
-    expect(() => repo.createWord({ lemma: 'ok', senses: [{ simpleZh: ' ' }] })).toThrow(
+    expect(() => repo.createWord(makeWordInput({ lemma: '   ' }))).toThrow(
+      InvalidRepositoryInputError,
+    );
+    expect(() => repo.createWord(makeWordInput({ now: new Date(Number.NaN) }))).toThrow(
+      InvalidRepositoryInputError,
+    );
+    expect(() => repo.createWord(makeWordInput({ deviceId: '' }))).toThrow(
       InvalidRepositoryInputError,
     );
   });
 });
 
-describe('appendEventAndUpdateState：事务性与幂等', () => {
-  it('首次作答同时写入事件与状态', () => {
+describe('词库与收藏', () => {
+  it('upsertDeck 创建后可更新（revision 自增、createdAt 不变）', () => {
     const db = createDatabase();
-    seedDeck(db);
-    const repo = createLearningRepository(db);
-    createWordRepository(db).createWord({ id: 'w-1', lemma: 'abandon', now: '2025-01-01T00:00:00.000Z' });
+    const repo = createWordRepository(db);
 
-    const result = repo.appendEventAndUpdateState(makeEvent(), makeState({ stage: 0 }));
+    const deck = repo.upsertDeck(makeDeckInput());
+    const renamed = repo.upsertDeck(
+      makeDeckInput({ id: deck.id, name: '考研核心', kind: 'CUSTOM', now: LATER }),
+    );
+
+    expect(renamed.id).toBe(deck.id);
+    expect(renamed.name).toBe('考研核心');
+    expect(renamed.kind).toBe('CUSTOM');
+    expect(renamed.createdAt).toBe(NOW.toISOString());
+    expect(renamed.updatedAt).toBe(LATER.toISOString());
+    expect(renamed.revision).toBe(1);
+    expect(repo.getDeckById(deck.id)?.name).toBe('考研核心');
+  });
+
+  it('listDecks 按归属范围隔离（换账号看不到别人的词库）', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    repo.upsertDeck(makeDeckInput({ name: '本地词库' }));
+    repo.upsertDeck(makeDeckInput({ name: '账号词库', ownerScope: accountOwnerScope('u1') }));
+
+    expect(repo.listDecks(LOCAL_OWNER_SCOPE).map((deck) => deck.name)).toEqual(['本地词库']);
+    expect(repo.listDecks(accountOwnerScope('u1')).map((deck) => deck.name)).toEqual(['账号词库']);
+  });
+
+  it('不能把已有词库改到别的账号名下', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    const deck = repo.upsertDeck(makeDeckInput());
+
+    expect(() =>
+      repo.upsertDeck(makeDeckInput({ id: deck.id, ownerScope: accountOwnerScope('u1') })),
+    ).toThrow(InvalidRepositoryInputError);
+  });
+
+  it('addDeckWord 幂等；removeDeckWord 软删；再次 add 复活同一条记录', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    const deck = repo.upsertDeck(makeDeckInput());
+    const word = repo.createWord(makeWordInput());
+
+    repo.addDeckWord(deck.id, word.id, 'dev-1', NOW);
+    repo.addDeckWord(deck.id, word.id, 'dev-1', LATER);
+    expect(repo.listDeckWordIds(deck.id)).toEqual([word.id]);
+    const firstRevision = db.prepare('SELECT revision FROM deck_words').get() as { revision: number };
+    expect(firstRevision.revision).toBe(0);
+
+    repo.removeDeckWord(deck.id, word.id, 'dev-1', LATER);
+    expect(repo.listDeckWordIds(deck.id)).toEqual([]);
+
+    repo.addDeckWord(deck.id, word.id, 'dev-1', new Date('2025-01-03T00:00:00.000Z'));
+    expect(repo.listDeckWordIds(deck.id)).toEqual([word.id]);
+    expect(countRows(db, 'deck_words')).toBe(1);
+  });
+});
+
+describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
+  /** 造三个词（w-1 高频、w-2/w-3 并列第二）。 */
+  function seedWords(db: SqliteDatabase): void {
+    seedSource(db, 'src-ngsl');
+    const repo = createWordRepository(db);
+    for (const lemma of ['abandon', 'ability', 'absent']) {
+      repo.createWord(makeWordInput({ lemma, id: `w-${lemma}` }));
+    }
+  }
+
+  /** 一份自洽的语料：3 个词，第 2 名并列两人。 */
+  function makeCorpus(overrides: Partial<FrequencyCorpusInput> = {}): FrequencyCorpusInput {
+    return {
+      exam: 'CET4',
+      corpusVersion: 'ngsl-1.2',
+      sourceId: 'src-ngsl',
+      totalTokens: 1000,
+      knownWordCount: 3,
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 2 },
+        { wordId: 'w-absent', frequency: 90, rank: 2, equalCount: 2 },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('并列语料写入成功，round-trip 的 rank/equalCount 与写入逐行相等（不现场重算）', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+    const corpus = makeCorpus();
+
+    repo.writeFrequencyCorpus(corpus);
+
+    const stored = repo.listFrequencyEntries('CET4', 'ngsl-1.2');
+    const expected = corpus.entries.map((entry: FrequencyCorpusEntry) => ({
+      wordId: entry.wordId,
+      frequency: entry.frequency,
+      rank: entry.rank,
+      equalCount: entry.equalCount,
+      corpusVersion: 'ngsl-1.2',
+      sourceId: 'src-ngsl',
+    }));
+    expect(stored).toEqual(
+      [...expected].sort((left, right) => left.rank - right.rank || left.wordId.localeCompare(right.wordId)),
+    );
+  });
+
+  it('rank 不连续（缺 2）抛 RANK_GAP，且旧语料原样保留', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+    repo.writeFrequencyCorpus(makeCorpus());
+
+    const broken = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 3, equalCount: 1 },
+        { wordId: 'w-absent', frequency: 90, rank: 3, equalCount: 1 },
+      ],
+    });
+
+    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(
+      /rank gap at frequency=90 expected=2 actual=3/u,
+    );
+    expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2')).toHaveLength(3);
+    expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2').map((entry) => entry.rank)).toEqual([1, 2, 2]);
+  });
+
+  it('并列组里仍写默认 equalCount=1 抛 TIE_GROUP_DEFAULT（team-lead 追加的验收项）', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+
+    const broken = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 1 },
+        { wordId: 'w-absent', frequency: 90, rank: 2, equalCount: 1 },
+      ],
+    });
+
+    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(
+      /equal_count mismatch at frequency=90 expected=2 actual=1/u,
+    );
+    // 「并列组写了默认值 1」必须与「equalCount 写错成别的数」区分开：
+    // 前者是导入脚本漏算并列，后者是数据本身有误，处置方式不同。
+    try {
+      repo.writeFrequencyCorpus(broken);
+      expect.unreachable('应当抛出 FrequencyCorpusMismatchError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
+      if (error instanceof FrequencyCorpusMismatchError) {
+        expect(error.kind).toBe('TIE_GROUP_DEFAULT');
+      }
+    }
+    // 整份语料整体回滚：一行都没落地。
+    expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2')).toEqual([]);
+  });
+
+  it('equalCount 与并列组大小不符（2 人的组写了 3）抛 EQUAL_COUNT_MISMATCH', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+
+    const broken = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 3 },
+        { wordId: 'w-absent', frequency: 90, rank: 2, equalCount: 3 },
+      ],
+    });
+
+    try {
+      repo.writeFrequencyCorpus(broken);
+      expect.unreachable('应当抛出 FrequencyCorpusMismatchError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
+      if (error instanceof FrequencyCorpusMismatchError) {
+        expect(error.kind).toBe('EQUAL_COUNT_MISMATCH');
+      }
+    }
+  });
+
+  it('覆盖词数与 knownWordCount 不符抛 TOTAL_MISMATCH，旧语料保持不变', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+    repo.writeFrequencyCorpus(makeCorpus());
+
+    const broken = makeCorpus({ knownWordCount: 5 });
+
+    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(
+      /knownWordCount mismatch expected=5 actual=3/u,
+    );
+    expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2').map((entry) => entry.wordId)).toEqual([
+      'w-abandon',
+      'w-ability',
+      'w-absent',
+    ]);
+  });
+
+  it('同一个词在一份语料里出现两次抛 DUPLICATE_WORD', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+
+    const broken = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-abandon', frequency: 90, rank: 2, equalCount: 1 },
+        { wordId: 'w-absent', frequency: 80, rank: 3, equalCount: 1 },
+      ],
+    });
+
+    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(FrequencyCorpusMismatchError);
+  });
+
+  it('totalTokens 可为 null（来源没给出统计口径时不写 0 冒充）', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+
+    repo.writeFrequencyCorpus(makeCorpus({ totalTokens: null }));
+
+    const row = db
+      .prepare('SELECT total_tokens FROM frequency_entries LIMIT 1')
+      .get() as { total_tokens: number | null };
+    expect(row.total_tokens).toBeNull();
+  });
+});
+
+describe('appendEventAndUpdateState：幂等与原子性', () => {
+  /** 造词库 + 三个词，供学习相关用例使用。 */
+  function seedDeckAndWords(db: SqliteDatabase): void {
+    const repo = createWordRepository(db);
+    repo.upsertDeck(makeDeckInput({ id: 'deck-1' }));
+    for (const wordId of ['w-1', 'w-2', 'w-3']) {
+      repo.createWord(makeWordInput({ id: wordId, lemma: `word-${wordId}` }));
+    }
+  }
+
+  it('单事务写入事件 + 状态 + 两条发件箱，返回递增的 outboxSeqs', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    const sync = createSyncRepository(db);
+    const state = makeState({ correctCount: 1, lastReviewedAt: '2025-01-05T01:00:00.000Z' });
+
+    const result = learning.appendEventAndUpdateState(makeEvent(), state);
 
     expect(result.applied).toBe(true);
-    expect(repo.getState('deck-1:w-1')).toMatchObject({ stage: 0, correctCount: 0 });
-    const rows = db.prepare('SELECT COUNT(*) AS n FROM learning_events').get() as { n: number };
-    expect(rows.n).toBe(1);
+    expect(result.outboxSeqs).toHaveLength(2);
+    expect(result.outboxSeqs[1]).toBeGreaterThan(result.outboxSeqs[0] ?? 0);
+    expect(countRows(db, 'learning_events')).toBe(1);
+    expect(learning.getState('deck-1:w-1')).toEqual(state);
+
+    const outbox = sync.listOutbox();
+    expect(outbox.map((record) => record.entityType)).toEqual(['LEARNING_EVENT', 'LEARNING_STATE']);
+    expect(outbox[0]?.entityId).toBe('evt-1');
+    expect(outbox[1]?.entityId).toBe('deck-1:w-1');
+    // 发件箱的入队时间取事件时间，而不是本地时钟（回放可复现）。
+    expect(outbox[0]?.createdAt).toBe('2025-01-05T01:00:00.000Z');
   });
 
   it('重复 eventId 返回 applied:false，且不动状态/计数/发件箱', () => {
     const db = createDatabase();
-    seedDeck(db);
-    const repo = createLearningRepository(db);
-    createWordRepository(db).createWord({ id: 'w-1', lemma: 'abandon', now: '2025-01-01T00:00:00.000Z' });
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    learning.appendEventAndUpdateState(makeEvent(), makeState({ wrongCount: 1 }));
 
-    repo.appendEventAndUpdateState(
-      makeEvent(),
-      makeState({ stage: 0, correctCount: 1, streakCorrect: 1, lastReviewedAt: '2025-01-05T01:00:00.000Z' }),
-      {
-        outbox: [
-          { entityType: 'LEARNING_STATE', entityId: 'deck-1:w-1', operation: 'UPSERT', payload: { stage: 0 } },
-        ],
-      },
-    );
-    const before = repo.getState('deck-1:w-1');
+    const before = {
+      state: learning.getState('deck-1:w-1'),
+      events: countRows(db, 'learning_events'),
+      outbox: countRows(db, 'sync_outbox'),
+    };
 
-    // 同一 eventId 再提交一次，但带一个“更靠后”的状态，验证它被完全忽略。
-    const replay = repo.appendEventAndUpdateState(
-      makeEvent(),
-      makeState({ stage: 3, correctCount: 99, streakCorrect: 99 }),
-      {
-        outbox: [
-          { entityType: 'LEARNING_STATE', entityId: 'deck-1:w-1', operation: 'UPSERT', payload: { stage: 3 } },
-        ],
-      },
+    const second = learning.appendEventAndUpdateState(
+      makeEvent({ isCorrect: false, answeredAt: '2025-01-06T01:00:00.000Z' }),
+      makeState({ wrongCount: 9, correctCount: 9 }),
     );
 
-    expect(replay.applied).toBe(false);
-    expect(repo.getState('deck-1:w-1')).toEqual(before);
-    const events = db.prepare('SELECT COUNT(*) AS n FROM learning_events').get() as { n: number };
-    const outbox = db.prepare('SELECT COUNT(*) AS n FROM sync_outbox').get() as { n: number };
-    expect(events.n).toBe(1);
-    expect(outbox.n).toBe(1);
+    expect(second).toEqual({ applied: false, outboxSeqs: [] });
+    expect(learning.getState('deck-1:w-1')).toEqual(before.state);
+    expect(countRows(db, 'learning_events')).toBe(before.events);
+    expect(countRows(db, 'sync_outbox')).toBe(before.outbox);
   });
 
-  it('事件、状态与发件箱在同一事务：发件箱写入失败时全部回滚', () => {
+  it('事件与状态主键不一致抛 RepositoryInvariantError，且一行都不留', () => {
     const db = createDatabase();
-    seedDeck(db);
-    const repo = createLearningRepository(db);
-    createWordRepository(db).createWord({ id: 'w-1', lemma: 'abandon', now: '2025-01-01T00:00:00.000Z' });
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
 
     expect(() =>
-      repo.appendEventAndUpdateState(makeEvent(), makeState({ stage: 0 }), {
-        // entityId 为空 → enqueueOutboxWithin 抛错 → 整个事务回滚
-        outbox: [{ entityType: 'LEARNING_STATE', entityId: '  ', operation: 'UPSERT', payload: {} }],
-      }),
-    ).toThrow(InvalidRepositoryInputError);
+      learning.appendEventAndUpdateState(
+        makeEvent({ userWordId: 'deck-1:w-2' }),
+        makeState({ userWordId: 'deck-1:w-1' }),
+      ),
+    ).toThrow(RepositoryInvariantError);
 
-    const events = db.prepare('SELECT COUNT(*) AS n FROM learning_events').get() as { n: number };
-    const states = db.prepare('SELECT COUNT(*) AS n FROM learning_state').get() as { n: number };
-    const outbox = db.prepare('SELECT COUNT(*) AS n FROM sync_outbox').get() as { n: number };
-    expect(events.n).toBe(0);
-    expect(states.n).toBe(0);
-    expect(outbox.n).toBe(0);
+    expect(countRows(db, 'learning_events')).toBe(0);
+    expect(countRows(db, 'learning_state')).toBe(0);
+    expect(countRows(db, 'sync_outbox')).toBe(0);
   });
 
-  it('事件与状态主键不一致时拒绝写入（避免把状态写到别的词上）', () => {
+  it('syncedAt 非 null 时拒绝写入（本地新事件必须由同步流程回填）', () => {
     const db = createDatabase();
-    seedDeck(db);
-    const repo = createLearningRepository(db);
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
 
     expect(() =>
-      repo.appendEventAndUpdateState(makeEvent(), makeState({ userWordId: 'deck-1:w-2' })),
-    ).toThrow(InvalidRepositoryInputError);
-  });
-
-  it('非法事件字段抛类型化错误（不把脏数据写进事实表）', () => {
-    const db = createDatabase();
-    seedDeck(db);
-    const repo = createLearningRepository(db);
-
-    expect(() =>
-      repo.appendEventAndUpdateState(
-        makeEvent({ mode: 'AUDIO' as unknown as LearningEventRecord['mode'] }),
+      learning.appendEventAndUpdateState(
+        makeEvent({ syncedAt: '2025-01-05T02:00:00.000Z' }),
         makeState(),
       ),
     ).toThrow(InvalidRepositoryInputError);
-    expect(() =>
-      repo.appendEventAndUpdateState(makeEvent({ localDate: '2025/01/05' }), makeState()),
-    ).toThrow(InvalidRepositoryInputError);
+  });
+
+  it('makeUserWordId 拼出稳定的 ${deckId}:${wordId}', () => {
+    expect(makeUserWordId('deck-1', 'w-1')).toBe('deck-1:w-1');
+    expect(() => makeUserWordId('', 'w-1')).toThrow(InvalidRepositoryInputError);
   });
 });
 
-describe('listDue / listMistakes', () => {
-  /** 造 3 条到期的状态 + 1 条已屏蔽 + 1 条未到期。 */
-  function seedStates(db: SqliteDatabase): void {
-    seedDeck(db);
-    const words = createWordRepository(db);
-    for (const [index, lemma] of ['abandon', 'ability', 'borrow', 'collect', 'desert'].entries()) {
-      words.createWord({ id: `w-${index + 1}`, lemma, now: '2025-01-01T00:00:00.000Z' });
+describe('查询：到期队列、错词本、日统计、会话', () => {
+  /** 造词库 + 三个词。 */
+  function seedDeckAndWords(db: SqliteDatabase): void {
+    const repo = createWordRepository(db);
+    repo.upsertDeck(makeDeckInput({ id: 'deck-1' }));
+    for (const wordId of ['w-1', 'w-2', 'w-3']) {
+      repo.createWord(makeWordInput({ id: wordId, lemma: `word-${wordId}` }));
     }
-    const insert = db.prepare(
-      `INSERT INTO learning_state
-         (user_word_id, deck_id, word_id, stage, due_at, correct_count, wrong_count, streak_correct,
-          weight, suppressed_at, state_updated_at)
-       VALUES (?, 'deck-1', ?, 0, ?, 0, 0, 0, 1, ?, '2025-01-01T00:00:00.000Z')`,
-    );
-    insert.run('deck-1:w-2', 'w-2', '2025-01-10T01:00:00.000Z', null);
-    insert.run('deck-1:w-1', 'w-1', '2025-01-05T01:00:00.000Z', null);
-    insert.run('deck-1:w-3', 'w-3', '2025-01-08T01:00:00.000Z', '2025-01-02T00:00:00.000Z');
-    insert.run('deck-1:w-4', 'w-4', '2025-06-01T01:00:00.000Z', null);
   }
 
-  it('listDue 只返回未屏蔽且已到期的，按到期时间升序', () => {
+  it('listDue 排除 suppressed 与未到期，按 dueAt 升序', () => {
     const db = createDatabase();
-    seedStates(db);
-    const repo = createLearningRepository(db);
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
 
-    const due = repo.listDue('deck-1', new Date('2025-01-20T00:00:00.000Z'));
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e1' }),
+      makeState({ dueAt: '2025-01-05T00:00:00.000Z' }),
+    );
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e2', userWordId: 'deck-1:w-2' }),
+      makeState({
+        userWordId: 'deck-1:w-2',
+        wordId: 'w-2',
+        dueAt: '2025-02-01T00:00:00.000Z',
+      }),
+    );
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e3', userWordId: 'deck-1:w-3' }),
+      makeState({
+        userWordId: 'deck-1:w-3',
+        wordId: 'w-3',
+        dueAt: '2025-01-06T00:00:00.000Z',
+      }),
+    );
+    db.prepare('UPDATE learning_state SET suppressed_at = ? WHERE user_word_id = ?').run(
+      NOW.toISOString(),
+      'deck-1:w-3',
+    );
 
-    expect(due.map((state) => state.userWordId)).toEqual(['deck-1:w-1', 'deck-1:w-2']);
+    const due = learning.listDue('deck-1', new Date('2025-01-10T00:00:00.000Z'));
+
+    expect(due.map((state) => state.userWordId)).toEqual(['deck-1:w-1']);
+    expect(learning.listStatesByDeck('deck-1')).toHaveLength(3);
   });
 
-  it('listDue 与 due_at 边界一致（恰好到期算到期）', () => {
+  it('listMistakes：lastWrongAt 由事件派生（取最近一次答错），只含答错过的词并按错次降序', () => {
     const db = createDatabase();
-    seedStates(db);
-    const repo = createLearningRepository(db);
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
 
-    const due = repo.listDue('deck-1', new Date('2025-01-10T01:00:00.000Z'));
-
-    expect(due.map((state) => state.userWordId)).toEqual(['deck-1:w-1', 'deck-1:w-2']);
-  });
-
-  it('listMistakes 的 lastWrongAt 由事件派生，并按最近答错排序', () => {
-    const db = createDatabase();
-    seedStates(db);
-    const repo = createLearningRepository(db);
-    const words = createWordRepository(db);
-
-    // w-1 错两次（最近 01-07），w-2 错一次（01-09）
-    repo.appendEventAndUpdateState(
-      makeEvent({ eventId: 'e1', userWordId: 'deck-1:w-1', wordId: 'w-1', isCorrect: false, recognition: 'UNKNOWN', answeredAt: '2025-01-05T01:00:00.000Z', localDate: '2025-01-05' }),
-      makeState({ userWordId: 'deck-1:w-1', wordId: 'w-1', wrongCount: 1 }),
-    );
-    repo.appendEventAndUpdateState(
-      makeEvent({ eventId: 'e2', userWordId: 'deck-1:w-1', wordId: 'w-1', isCorrect: false, recognition: 'UNKNOWN', answeredAt: '2025-01-07T01:00:00.000Z', localDate: '2025-01-07' }),
-      makeState({ userWordId: 'deck-1:w-1', wordId: 'w-1', wrongCount: 2 }),
-    );
-    repo.appendEventAndUpdateState(
-      makeEvent({ eventId: 'e3', userWordId: 'deck-1:w-2', wordId: 'w-2', isCorrect: false, recognition: 'UNKNOWN', answeredAt: '2025-01-09T01:00:00.000Z', localDate: '2025-01-09' }),
-      makeState({ userWordId: 'deck-1:w-2', wordId: 'w-2', wrongCount: 1 }),
-    );
-    // 答对不应进入错词本，也不应影响 lastWrongAt
-    repo.appendEventAndUpdateState(
-      makeEvent({ eventId: 'e4', userWordId: 'deck-1:w-1', wordId: 'w-1', isCorrect: true, answeredAt: '2025-01-12T01:00:00.000Z', localDate: '2025-01-12' }),
-      makeState({ userWordId: 'deck-1:w-1', wordId: 'w-1', wrongCount: 2, correctCount: 1 }),
-    );
-    expect(words.listSenses('w-1')).toHaveLength(0);
-
-    const mistakes = repo.listMistakes('deck-1');
-
-    expect(mistakes.map((record) => record.state.userWordId)).toEqual(['deck-1:w-2', 'deck-1:w-1']);
-    expect(mistakes[0]?.lastWrongAt).toBe('2025-01-09T01:00:00.000Z');
-    expect(mistakes[1]?.lastWrongAt).toBe('2025-01-07T01:00:00.000Z');
-  });
-
-  it('listMistakes 支持 limit，且忽略没有错词的词', () => {
-    const db = createDatabase();
-    seedStates(db);
-    const repo = createLearningRepository(db);
-    repo.appendEventAndUpdateState(
-      makeEvent({ eventId: 'e1', isCorrect: false, recognition: 'UNKNOWN' }),
+    // w-1：01-05 错、01-07 错、01-09 对（最近答错时间必须是 01-07，不是 01-09）。
+    learning.appendEventAndUpdateState(
+      makeEvent({
+        eventId: 'e1',
+        isCorrect: false,
+        answeredAt: '2025-01-05T01:00:00.000Z',
+        localDate: '2025-01-05',
+      }),
       makeState({ wrongCount: 1 }),
     );
-
-    expect(repo.listMistakes('deck-1', 1)).toHaveLength(1);
-    expect(repo.listMistakes('deck-1', 10)).toHaveLength(1);
-    expect(() => repo.listMistakes('deck-1', 0)).toThrow(InvalidRepositoryInputError);
-  });
-
-  it('getState 不存在时返回 null', () => {
-    const db = createDatabase();
-    seedDeck(db);
-
-    expect(createLearningRepository(db).getState('nope')).toBeNull();
-  });
-});
-
-describe('writeFrequencyCorpus', () => {
-  it('写入自洽语料，rank 与 equal_count 落库', () => {
-    const { db, words } = seedForFrequency();
-
-    const result = words.writeFrequencyCorpus(makeCorpus());
-
-    expect(result).toEqual({ written: 2, corpusVersion: 'ngsl-1.2', knownWordCount: 2 });
-    const rows = db
-      .prepare('SELECT word_id, rank, equal_count, frequency FROM frequency_entries ORDER BY word_id')
-      .all() as { word_id: string; rank: number; equal_count: number; frequency: number }[];
-    expect(rows).toEqual([
-      { word_id: 'w-1', rank: 1, equal_count: 2, frequency: 100 },
-      { word_id: 'w-2', rank: 1, equal_count: 2, frequency: 100 },
-    ]);
-  });
-
-  it('同一语料重复导入是 upsert，不产生重复行', () => {
-    const { db, words } = seedForFrequency();
-
-    words.writeFrequencyCorpus(makeCorpus());
-    words.writeFrequencyCorpus(makeCorpus({ now: '2025-02-01T00:00:00.000Z' }));
-
-    const count = db.prepare('SELECT COUNT(*) AS n FROM frequency_entries').get() as { n: number };
-    expect(count.n).toBe(2);
-  });
-
-  it('单条 rank 却声称并列（equalCount=2 但组内只有 1 条）→ RANK_INCONSISTENT', () => {
-    const { words } = seedForFrequency();
-    const corpus = makeCorpus({
-      knownWordCount: 2,
-      entries: [
-        { wordId: 'w-1', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 2 },
-        // 漏写真实并列数，让它走默认 1
-        { wordId: 'w-2', frequency: 101, totalTokens: 1000, rank: 2, equalCount: 1 },
-      ],
-    });
-
-    // 这里 rank 不同、SUM 也刚好等于 2，但 w-1 声称自己与另一个词并列——
-    // 单条 rank=1 的组大小为 1，与 equalCount=2 矛盾。
-    expect(() => words.writeFrequencyCorpus(corpus)).toThrow(FrequencyCorpusMismatchError);
-    try {
-      words.writeFrequencyCorpus(corpus);
-    } catch (error) {
-      expect((error as FrequencyCorpusMismatchError).kind).toBe('RANK_INCONSISTENT');
-    }
-  });
-
-  it('真正的“并列组里混入默认 1”被识别为 TIE_GROUP_DEFAULT', () => {
-    const { words } = seedForFrequency();
-    const corpus = makeCorpus({
-      knownWordCount: 2,
-      entries: [
-        { wordId: 'w-1', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 2 },
-        { wordId: 'w-2', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 1 },
-      ],
-    });
-
-    try {
-      words.writeFrequencyCorpus(corpus);
-      throw new Error('expected FrequencyCorpusMismatchError');
-    } catch (error) {
-      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
-      const mismatch = error as FrequencyCorpusMismatchError;
-      expect(mismatch.kind).toBe('TIE_GROUP_DEFAULT');
-      // 错误信息必须能指出是哪一条、哪个并列组，而不是一句“数据不一致”。
-      expect(mismatch.message).toContain('w-2');
-      expect(mismatch.message).toContain('rank=1');
-      expect(mismatch.message).toContain('默认值 1');
-    }
-  });
-
-  it('SUM(equal_count) 与 knownWordCount 不符 → TOTAL_MISMATCH 且整份语料不落库', () => {
-    const { db, words } = seedForFrequency();
-    const corpus = makeCorpus({ knownWordCount: 5 });
-
-    try {
-      words.writeFrequencyCorpus(corpus);
-      throw new Error('expected FrequencyCorpusMismatchError');
-    } catch (error) {
-      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
-      expect((error as FrequencyCorpusMismatchError).kind).toBe('TOTAL_MISMATCH');
-    }
-    const count = db.prepare('SELECT COUNT(*) AS n FROM frequency_entries').get() as { n: number };
-    expect(count.n).toBe(0);
-  });
-
-  it('knownWordCount 非正整数 → KNOWN_WORD_COUNT_INVALID', () => {
-    const { words } = seedForFrequency();
-
-    expect(() => words.writeFrequencyCorpus(makeCorpus({ knownWordCount: 0 }))).toThrow(
-      FrequencyCorpusMismatchError,
+    learning.appendEventAndUpdateState(
+      makeEvent({
+        eventId: 'e2',
+        isCorrect: false,
+        answeredAt: '2025-01-07T01:00:00.000Z',
+        localDate: '2025-01-07',
+      }),
+      makeState({ wrongCount: 2 }),
     );
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e3', answeredAt: '2025-01-09T01:00:00.000Z', localDate: '2025-01-09' }),
+      makeState({ wrongCount: 2, correctCount: 1 }),
+    );
+    // w-2：只错一次（错次更少，应排在 w-1 之后）。
+    learning.appendEventAndUpdateState(
+      makeEvent({
+        eventId: 'e4',
+        userWordId: 'deck-1:w-2',
+        isCorrect: false,
+        answeredAt: '2025-01-08T01:00:00.000Z',
+        localDate: '2025-01-08',
+      }),
+      makeState({ userWordId: 'deck-1:w-2', wordId: 'w-2', wrongCount: 1 }),
+    );
+    // w-3：只答对过，不该出现在错词本里。
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e5', userWordId: 'deck-1:w-3', localDate: '2025-01-08' }),
+      makeState({ userWordId: 'deck-1:w-3', wordId: 'w-3', correctCount: 1 }),
+    );
+
+    const mistakes = learning.listMistakes('deck-1');
+
+    expect(mistakes.map((mistake) => mistake.userWordId)).toEqual(['deck-1:w-1', 'deck-1:w-2']);
+    expect(mistakes[0]).toEqual({
+      userWordId: 'deck-1:w-1',
+      wordId: 'w-1',
+      wrongCount: 2,
+      correctCount: 1,
+      lastWrongAt: '2025-01-07T01:00:00.000Z',
+    });
+    expect(mistakes[1]?.lastWrongAt).toBe('2025-01-08T01:00:00.000Z');
   });
 
-  it('同一个词在同一份语料里出现多次 → DUPLICATE_WORD', () => {
-    const { words } = seedForFrequency();
-    const corpus = makeCorpus({
-      knownWordCount: 2,
-      entries: [
-        { wordId: 'w-1', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 1 },
-        { wordId: 'w-1', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 1 },
-      ],
+  it('listDailyStats 按 local_date 分组，activeMs 把 null 当 0', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e1', durationMs: 3000 }),
+      makeState(),
+    );
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e2', isCorrect: false, durationMs: null, answeredAt: '2025-01-05T02:00:00.000Z' }),
+      makeState({ wrongCount: 1 }),
+    );
+    learning.appendEventAndUpdateState(
+      makeEvent({
+        eventId: 'e3',
+        userWordId: 'deck-1:w-2',
+        durationMs: 1000,
+        answeredAt: '2025-01-06T01:00:00.000Z',
+        localDate: '2025-01-06',
+      }),
+      makeState({ userWordId: 'deck-1:w-2', wordId: 'w-2' }),
+    );
+
+    expect(learning.listDailyStats('2025-01-01', '2025-01-31')).toEqual([
+      { localDate: '2025-01-05', total: 2, correct: 1, wrong: 1, activeMs: 3000 },
+      { localDate: '2025-01-06', total: 1, correct: 1, wrong: 0, activeMs: 1000 },
+    ]);
+    expect(learning.listDailyStats('2025-01-06', '2025-01-06')).toHaveLength(1);
+  });
+
+  it('upsertSession 可更新同一会话（revision 自增），listSessions 按时间窗过滤', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    const session = {
+      sessionId: 'sess-1',
+      deckId: 'deck-1',
+      startedAt: '2025-01-05T01:00:00.000Z',
+      endedAt: null,
+      localDate: '2025-01-05',
+      timeZone: 'Asia/Shanghai',
+      newCount: 0,
+      reviewCount: 0,
+      activeDurationMs: 0,
+      planSnapshotJson: null,
+      deviceId: 'dev-1',
+      revision: 0,
+    };
+
+    learning.upsertSession(session);
+    learning.upsertSession({
+      ...session,
+      endedAt: '2025-01-05T01:30:00.000Z',
+      newCount: 10,
+      reviewCount: 20,
+      activeDurationMs: 1_800_000,
+      planSnapshotJson: '{"dailyNewLimit":10}',
+      revision: 1,
     });
 
-    try {
-      words.writeFrequencyCorpus(corpus);
-      throw new Error('expected FrequencyCorpusMismatchError');
-    } catch (error) {
-      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
-      expect((error as FrequencyCorpusMismatchError).kind).toBe('DUPLICATE_WORD');
-    }
-  });
-
-  it('并列语料按“每词一行 + 行内 equal_count=组大小”通过校验（而非按行 SUM）', () => {
-    // 口径说明：两个词并列时，每行 equal_count 都是 2，按行求和得 4，
-    // 而词数是 2——所以“SUM(equal_count) == knownWordCount”按字面执行会禁止一切并列。
-    // 这里锁定实际采用的等价判据：每词一行 + 每行 equal_count == 本组大小。
-    const { db, words } = seedForFrequency();
-
-    expect(() => words.writeFrequencyCorpus(makeCorpus({ knownWordCount: 2 }))).not.toThrow();
-    const rowSum = db
-      .prepare('SELECT SUM(equal_count) AS s, COUNT(*) AS n FROM frequency_entries')
-      .get() as { s: number; n: number };
-    expect(rowSum).toEqual({ s: 4, n: 2 });
-  });
-
-  it('写入过程中任一失败则整体回滚（不留半份语料）', () => {
-    const { db, words } = seedForFrequency();
-    const corpus = makeCorpus({
-      knownWordCount: 2,
-      entries: [
-        { wordId: 'w-1', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 2 },
-        { wordId: 'w-2', frequency: 100, totalTokens: 1000, rank: 1, equalCount: 2 },
-      ],
-    });
-    // 删掉 w-2，让第二条撞外键
-    db.prepare("DELETE FROM words WHERE id = 'w-2'").run();
-
-    expect(() => words.writeFrequencyCorpus(corpus)).toThrow();
-    const count = db.prepare('SELECT COUNT(*) AS n FROM frequency_entries').get() as { n: number };
-    expect(count.n).toBe(0);
+    const sessions = learning.listSessions('2025-01-01T00:00:00.000Z', '2025-01-10T00:00:00.000Z');
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.newCount).toBe(10);
+    expect(sessions[0]?.reviewCount).toBe(20);
+    expect(sessions[0]?.endedAt).toBe('2025-01-05T01:30:00.000Z');
+    expect(sessions[0]?.revision).toBe(1);
+    expect(learning.listSessions('2025-02-01T00:00:00.000Z', '2025-02-10T00:00:00.000Z')).toEqual([]);
   });
 });
 
-describe('createSettingsRepository', () => {
-  it('读取不存在的键返回 null；写入后可读回最新值', () => {
+describe('设置与学习时段', () => {
+  it('set/get/getAll 往返字符串，不替调用方解析 JSON', () => {
     const db = createDatabase();
     const settings = createSettingsRepository(db);
 
-    expect(settings.get('reviewPlan')).toBeNull();
-    settings.set('reviewPlan', '{"dailyNewLimit":20}');
-    expect(settings.get('reviewPlan')).toBe('{"dailyNewLimit":20}');
-    settings.set('reviewPlan', '{"dailyNewLimit":30}');
-    expect(settings.get('reviewPlan')).toBe('{"dailyNewLimit":30}');
+    settings.set('dailyNewLimit', '{"value":20}', 'dev-1', NOW);
+    settings.set('timeZone', '"Asia/Shanghai"', 'dev-1', NOW);
+
+    expect(settings.get('dailyNewLimit')).toBe('{"value":20}');
+    expect(settings.getAll()).toEqual({
+      dailyNewLimit: '{"value":20}',
+      timeZone: '"Asia/Shanghai"',
+    });
+    expect(settings.get('missing')).toBeNull();
   });
 
-  it('空键或非字符串值抛类型化错误', () => {
+  it('remove 是软删除：读不到但行还在（删除要能同步），再次 set 复活', () => {
     const db = createDatabase();
     const settings = createSettingsRepository(db);
+    settings.set('dailyNewLimit', '20', 'dev-1', NOW);
 
-    expect(() => settings.get(' ')).toThrow(InvalidRepositoryInputError);
-    expect(() => settings.set('k', 1 as unknown as string)).toThrow(InvalidRepositoryInputError);
+    settings.remove('dailyNewLimit', 'dev-1', LATER);
+
+    expect(settings.get('dailyNewLimit')).toBeNull();
+    expect(settings.getAll()).toEqual({});
+    expect(countRows(db, 'settings')).toBe(1);
+    const row = db.prepare('SELECT deleted_at FROM settings WHERE key = ?').get('dailyNewLimit') as {
+      deleted_at: string | null;
+    };
+    expect(row.deleted_at).toBe(LATER.toISOString());
+
+    settings.set('dailyNewLimit', '30', 'dev-1', LATER);
+    expect(settings.get('dailyNewLimit')).toBe('30');
+    expect(countRows(db, 'settings')).toBe(1);
+  });
+
+  it('replacePlanWindows 全量替换：旧时段软删、新时段写入、同 id 复活不重复', () => {
+    const db = createDatabase();
+    const settings = createSettingsRepository(db);
+    const morning: PlanWindowRecord = {
+      id: 'win-1',
+      effectiveLocalDate: '2025-01-01',
+      startMinute: 7 * 60,
+      endMinute: 8 * 60,
+      timeZone: 'Asia/Shanghai',
+      updatedAt: NOW.toISOString(),
+      deviceId: 'dev-1',
+      revision: 0,
+      deletedAt: null,
+    };
+    const evening: PlanWindowRecord = {
+      ...morning,
+      id: 'win-2',
+      startMinute: 20 * 60,
+      endMinute: 22 * 60,
+    };
+
+    settings.replacePlanWindows([evening, morning], 'dev-1', NOW);
+    expect(settings.listPlanWindows().map((window) => window.id)).toEqual(['win-1', 'win-2']);
+
+    // 只保留 evening：morning 被软删，不出现在列表里，但行仍在。
+    settings.replacePlanWindows([evening], 'dev-1', LATER);
+    expect(settings.listPlanWindows().map((window) => window.id)).toEqual(['win-2']);
+    // revision 走两次：软删旧行 +1、复活新行 +1——每次写都是一次可同步的变更。
+    expect(settings.listPlanWindows()[0]?.revision).toBe(2);
+    expect(countRows(db, 'plan_windows')).toBe(2);
+
+    // 再次传回 morning：同 id 复活，不会插出第二行。
+    settings.replacePlanWindows([morning], 'dev-1', new Date('2025-01-03T00:00:00.000Z'));
+    expect(settings.listPlanWindows().map((window) => window.id)).toEqual(['win-1']);
+    expect(countRows(db, 'plan_windows')).toBe(2);
+  });
+
+  it('非法时段（结束早于开始 / 分钟越界）抛 InvalidRepositoryInputError 且不写入', () => {
+    const db = createDatabase();
+    const settings = createSettingsRepository(db);
+    const base: PlanWindowRecord = {
+      id: 'win-1',
+      effectiveLocalDate: '2025-01-01',
+      startMinute: 7 * 60,
+      endMinute: 8 * 60,
+      timeZone: 'Asia/Shanghai',
+      updatedAt: NOW.toISOString(),
+      deviceId: 'dev-1',
+      revision: 0,
+      deletedAt: null,
+    };
+
+    expect(() =>
+      settings.replacePlanWindows([{ ...base, startMinute: 600, endMinute: 600 }], 'dev-1', NOW),
+    ).toThrow(InvalidRepositoryInputError);
+    expect(() =>
+      settings.replacePlanWindows([{ ...base, startMinute: -1 }], 'dev-1', NOW),
+    ).toThrow(InvalidRepositoryInputError);
+    expect(() =>
+      settings.replacePlanWindows([{ ...base, endMinute: 1441 }], 'dev-1', NOW),
+    ).toThrow(InvalidRepositoryInputError);
+    expect(settings.listPlanWindows()).toEqual([]);
   });
 });

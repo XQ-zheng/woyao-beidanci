@@ -1,13 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { SqliteDatabase } from './connection';
-import { listAppliedMigrations, migrate, openDatabase } from './connection';
+import { closeDatabase, listAppliedMigrations, migrate, openDatabase } from './connection';
 import { InvalidDatabasePathError, MigrationError } from './errors';
+
+/** 本文件创建的连接，`afterEach` 统一关闭（内存库不关会随测试进程一起泄漏）。 */
+const openDatabases: SqliteDatabase[] = [];
 
 /** 建一个已迁移过的内存库。 */
 function createMigratedDatabase(): SqliteDatabase {
   const db = openDatabase(':memory:');
-  migrate(db, { now: new Date('2025-01-01T00:00:00.000Z') });
+  migrate(db);
+  openDatabases.push(db);
   return db;
 }
 
@@ -17,7 +21,7 @@ function columnsOf(db: SqliteDatabase, table: string): string[] {
   return rows.map((row) => row.name);
 }
 
-/** 读出一张表的所有 CHECK/UNIQUE 约束（来自建表 SQL 文本）。 */
+/** 读出一张表的建表 SQL 文本。 */
 function createSqlOf(db: SqliteDatabase, table: string): string {
   const row = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -25,8 +29,25 @@ function createSqlOf(db: SqliteDatabase, table: string): string {
   return row?.sql ?? '';
 }
 
+/** 读出库里所有索引名。 */
+function indexNamesOf(db: SqliteDatabase): string[] {
+  const rows = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'")
+    .all() as { name: string }[];
+  return rows.map((row) => row.name);
+}
+
+afterEach(() => {
+  while (openDatabases.length > 0) {
+    const db = openDatabases.pop();
+    if (db !== undefined) {
+      closeDatabase(db);
+    }
+  }
+});
+
 describe('migrate：建表与幂等', () => {
-  it('创建全部领域表与同步表', () => {
+  it('创建全部领域表与同步表（17 张，含 schema_migrations）', () => {
     const db = createMigratedDatabase();
 
     const rows = db
@@ -57,37 +78,81 @@ describe('migrate：建表与幂等', () => {
         'words',
       ].sort(),
     );
+    expect(tables).toHaveLength(17);
   });
 
-  it('两次 migrate 是幂等的，版本表只有 001/002', () => {
+  it('关键查询都有索引（否则热路径会退化成全表扫）', () => {
     const db = createMigratedDatabase();
-    const secondNow = new Date('2025-02-02T00:00:00.000Z');
+    const indexes = indexNamesOf(db);
 
-    expect(() => migrate(db, { now: secondNow })).not.toThrow();
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        'idx_learning_state_due',
+        'idx_learning_events_user_word',
+        'idx_learning_events_local_date',
+        'idx_words_normalized',
+        'idx_word_senses_word',
+        'idx_decks_owner_kind',
+        'idx_sync_outbox_seq',
+      ]),
+    );
+  });
+
+  it('两次 migrate 是幂等的：版本表只有 001/002，applied_at 不被覆盖', () => {
+    const db = createMigratedDatabase();
+    const before = db
+      .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version')
+      .all() as { version: string; applied_at: string }[];
+
+    expect(() => migrate(db)).not.toThrow();
     expect(listAppliedMigrations(db)).toEqual(['001', '002']);
 
-    const rows = db.prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version').all() as {
-      version: string;
+    const after = db
+      .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version')
+      .all() as { version: string; applied_at: string }[];
+    expect(after).toEqual(before);
+    expect(after).toHaveLength(2);
+  });
+
+  it('applied_at 是 UTC ISO-8601 毫秒字符串（由 SQLite 生成，不用 new Date()）', () => {
+    const db = createMigratedDatabase();
+    const rows = db.prepare('SELECT applied_at FROM schema_migrations').all() as {
       applied_at: string;
     }[];
-    // 幂等不只是“不报错”：已应用版本的 applied_at 不能被覆盖。
-    expect(rows[0]?.applied_at).toBe('2025-01-01T00:00:00.000Z');
+
+    for (const row of rows) {
+      expect(row.applied_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u);
+      expect(Number.isNaN(Date.parse(row.applied_at))).toBe(false);
+    }
   });
 
   it('learning_events 以 event_id 为主键（幂等键）', () => {
     const db = createMigratedDatabase();
 
     const columns = columnsOf(db, 'learning_events');
-    expect(columns).toContain('event_id');
-    expect(columns).toContain('recognition');
-    expect(columns).toContain('stage_before');
-    expect(columns).toContain('stage_after');
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        'event_id',
+        'user_word_id',
+        'mode',
+        'recognition',
+        'stage_before',
+        'stage_after',
+        'local_date',
+        'synced_at',
+      ]),
+    );
 
-    const pk = db.prepare('PRAGMA table_info(learning_events)').all() as { name: string; pk: number }[];
-    expect(pk.filter((column) => column.pk > 0).map((column) => column.name)).toEqual(['event_id']);
+    const tableInfo = db.prepare('PRAGMA table_info(learning_events)').all() as {
+      name: string;
+      pk: number;
+    }[];
+    expect(tableInfo.filter((column) => column.pk > 0).map((column) => column.name)).toEqual([
+      'event_id',
+    ]);
   });
 
-  it('words 唯一键是 (owner_scope, normalized_lemma)，且软删除后可重新添加', () => {
+  it('words 唯一键是 (owner_scope, normalized_lemma)，软删后可重新添加且跨账号隔离', () => {
     const db = createMigratedDatabase();
     const insert = db.prepare(
       `INSERT INTO words (id, owner_scope, lemma, normalized_lemma, created_at, updated_at)
@@ -97,13 +162,13 @@ describe('migrate：建表与幂等', () => {
     insert.run('w1', 'LOCAL', 'Abandon', 'abandon');
     expect(() => insert.run('w2', 'LOCAL', 'abandon', 'abandon')).toThrow(/UNIQUE/i);
     // 不同 owner_scope 不冲突（账号隔离）。
-    expect(() => insert.run('w3', 'account-1', 'abandon', 'abandon')).not.toThrow();
+    expect(() => insert.run('w3', 'acct:u1', 'abandon', 'abandon')).not.toThrow();
 
     db.prepare("UPDATE words SET deleted_at = '2025-01-02T00:00:00.000Z' WHERE id = 'w1'").run();
     expect(() => insert.run('w4', 'LOCAL', 'abandon', 'abandon')).not.toThrow();
   });
 
-  it('normalized_lemma 必须已是小写去空白形式（CHECK 兜住脏数据）', () => {
+  it('normalized_lemma 必须是已标准化形式（CHECK 兜住脏数据）', () => {
     const db = createMigratedDatabase();
 
     expect(() =>
@@ -151,7 +216,7 @@ describe('migrate：建表与幂等', () => {
     expect(() => insertState.run('u4', 0, 4.5)).toThrow(/CHECK/i);
   });
 
-  it('frequency_entries 的 equal_count 是 NOT NULL DEFAULT 1 且 >= 1', () => {
+  it('frequency_entries 的 equal_count 是 NOT NULL DEFAULT 1 且 >= 1，total_tokens 允许 NULL', () => {
     const db = createMigratedDatabase();
     db.prepare(
       `INSERT INTO words (id, owner_scope, lemma, normalized_lemma, created_at, updated_at)
@@ -164,15 +229,16 @@ describe('migrate：建表与幂等', () => {
 
     const insertEntry = db.prepare(
       `INSERT INTO frequency_entries (word_id, exam, corpus_version, frequency, total_tokens, rank, source_id)
-       VALUES ('w1', ?, 'v1', 10, 1000, 5, 'src1')`,
+       VALUES ('w1', ?, 'v1', 10, ?, 5, 'src1')`,
     );
-    insertEntry.run('CET4');
-    insertEntry.run('CET6');
+    insertEntry.run('CET4', null);
+    insertEntry.run('CET6', 1000);
 
     const rows = db
-      .prepare('SELECT exam, equal_count FROM frequency_entries ORDER BY exam')
-      .all() as { exam: string; equal_count: number }[];
+      .prepare('SELECT exam, equal_count, total_tokens FROM frequency_entries ORDER BY exam')
+      .all() as { exam: string; equal_count: number; total_tokens: number | null }[];
     expect(rows.map((row) => row.equal_count)).toEqual([1, 1]);
+    expect(rows.map((row) => row.total_tokens)).toEqual([null, 1000]);
 
     expect(() =>
       db
@@ -182,7 +248,7 @@ describe('migrate：建表与幂等', () => {
         )
         .run(),
     ).toThrow(/CHECK/i);
-    // 列上不允许 NULL：SUM() 会跳过 NULL，让 SUM(equal_count) == knownWordCount 失去意义。
+    // 列上不允许 NULL：SUM() 会跳过 NULL，任何基于 equal_count 的校验都会因此失效。
     expect(() =>
       db
         .prepare(
@@ -191,25 +257,37 @@ describe('migrate：建表与幂等', () => {
         )
         .run(),
     ).toThrow(/NOT NULL/i);
-  });
-
-  it('源表里的 frequency_entries 声明包含 equal_count 的 NOT NULL DEFAULT 1', () => {
-    const db = createMigratedDatabase();
 
     expect(createSqlOf(db, 'frequency_entries')).toMatch(
       /equal_count\s+INTEGER\s+NOT NULL\s+DEFAULT\s+1\s+CHECK\s*\(\s*equal_count\s*>=\s*1\s*\)/i,
     );
   });
+
+  it('settings 支持软删除（删除也要能同步给其他设备）', () => {
+    const db = createMigratedDatabase();
+
+    expect(columnsOf(db, 'settings')).toContain('deleted_at');
+  });
 });
 
-describe('openDatabase / migrate：错误路径', () => {
+describe('openDatabase / closeDatabase / migrate：错误路径', () => {
   it('空路径抛 InvalidDatabasePathError', () => {
     expect(() => openDatabase('')).toThrow(InvalidDatabasePathError);
     expect(() => openDatabase('   ')).toThrow(InvalidDatabasePathError);
   });
 
+  it('closeDatabase 是幂等的（Electron 退出与测试清理都会重复调用）', () => {
+    const db = openDatabase(':memory:');
+
+    expect(() => {
+      closeDatabase(db);
+      closeDatabase(db);
+    }).not.toThrow();
+  });
+
   it('迁移失败时抛 MigrationError 并回滚该版本', () => {
     const db = openDatabase(':memory:');
+    openDatabases.push(db);
     // 预先造一张同名但缺列的表，让 001 的 CREATE INDEX 撞车（IF NOT EXISTS 不会救场）。
     db.exec('CREATE TABLE learning_state (user_word_id TEXT PRIMARY KEY)');
 

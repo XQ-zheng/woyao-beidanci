@@ -14,6 +14,15 @@ const webSourceFiles = ['apps/web/src/**/*.{ts,tsx}'];
  */
 const coreSourceFiles = ['packages/core/src/**/*.ts'];
 
+/**
+ * 数据层源码：跑在 Node 侧（`better-sqlite3` 原生模块），但**同样不许 import `node:*`**。
+ *
+ * 原因不是洁癖：迁移 SQL 已通过 `?raw` 在构建期内联，时间戳要么由调用方注入、
+ * 要么交给 SQLite 生成，ID 用 `globalThis.crypto.randomUUID()`——一旦有人写回
+ * `node:fs` / `node:crypto`，Electron 打包与移动端 WebView 就会在运行时才炸。
+ */
+const dataSourceFiles = ['packages/data/src/**/*.ts'];
+
 /** 构建与检查工具的配置文件：这些才真正运行在 Node 里。 */
 const toolingConfigFiles = [
   '**/*.config.{js,mjs,cjs,ts,mts,cts}',
@@ -79,6 +88,39 @@ export default tseslint.config(
               ],
               message:
                 'packages/core 是浏览器中立的纯 TS 领域层：不得导入 Node 内置模块，平台能力请放到适配器层。',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: dataSourceFiles,
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                'node:*',
+                'fs',
+                'fs/promises',
+                'path',
+                'os',
+                'process',
+                'crypto',
+                'child_process',
+                'http',
+                'https',
+                'net',
+                'worker_threads',
+              ],
+              message:
+                'packages/data 的数据层不得导入 Node 内置模块：迁移 SQL 用 ?raw 内联，时间与 ID 由调用方注入或交给 SQLite，平台能力放到 Electron/Capacitor 适配层。',
             },
           ],
         },

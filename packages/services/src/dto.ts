@@ -491,6 +491,12 @@ export const onlineAssociationsInputSchema = z.strictObject({
   kind: associationKindSchema,
 });
 
+/** 处置同步冲突入参。 */
+export const resolveConflictInputSchema = z.strictObject({
+  id: z.string().min(1, '冲突 id 不能为空'),
+  resolution: z.enum(['LOCAL_WINS', 'REMOTE_WINS']),
+});
+
 /** `AssociationKind` 的运行时品牌，便于服务层 import 类型而不用值。 */
 export type { AssociationKind } from '@woyao/data';
 

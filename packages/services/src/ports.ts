@@ -13,6 +13,8 @@
 
 import type { Clock } from '@woyao/core';
 import type {
+  EntityChange,
+  EntityType,
   LearningRepository,
   SettingsRepository,
   SyncRepository,
@@ -157,6 +159,67 @@ export interface NetworkMonitorPort {
   isOnline(): boolean;
 }
 
+/** 一次登录返回的会话（服务层只透传，**不存 token**——安全存储在 Task 7/10）。 */
+export interface AuthSession {
+  readonly userId: string;
+  readonly token: string;
+  readonly refreshToken: string;
+  readonly expiresAt: string | null;
+}
+
+/** 登录方式。 */
+export interface SignInInput {
+  readonly provider: 'email' | 'phone' | 'wechat' | 'qq';
+  readonly credential: string;
+}
+
+/** 认证网关（外壳注入的云端认证实现；WorkBuddy Cloud 未激活时为 `null`）。 */
+export interface AuthGateway {
+  signIn(input: SignInInput): Promise<AuthSession>;
+  refresh(session: AuthSession): Promise<AuthSession>;
+  signOut(session: AuthSession): Promise<void>;
+}
+
+/** 远端的一条变更（pull 返回）。 */
+export interface RemoteChange {
+  readonly entityType: EntityType;
+  readonly entityId: string;
+  readonly operation: 'UPSERT' | 'DELETE';
+  readonly payload: unknown;
+  readonly revision: number;
+  readonly deviceId: string;
+}
+
+/** pull 的一页结果。 */
+export interface PullPage {
+  readonly changes: RemoteChange[];
+  readonly nextCursor: string | null;
+  readonly hasMore: boolean;
+}
+
+/** 同步网关（外壳注入的云端同步实现；WorkBuddy Cloud 未激活时为 `null`）。 */
+export interface SyncGateway {
+  push(change: EntityChange): Promise<'OK' | 'DUPLICATE'>;
+  pull(cursor: string | null): Promise<PullPage>;
+}
+
+/**
+ * 云端端口。
+ *
+ * `configured === false` 表示 WorkBuddy Cloud 未激活（本轮常态）：`auth`/`sync` 都是 `null`。
+ * 服务层据此诚实地报 `NOT_CONFIGURED`，**绝不伪造“已登录/已同步”**。
+ */
+export interface CloudPort {
+  readonly configured: boolean;
+  readonly auth: AuthGateway | null;
+  readonly sync: SyncGateway | null;
+}
+
+/** 创建一个“未配置”的云端端口（WorkBuddy Cloud 激活前的默认实现）。 */
+export function createNoopCloud(): CloudPort {
+  return { configured: false, auth: null, sync: null };
+}
+
 /** 服务运行上下文：所有服务共享这一份依赖。 */
 export interface ServiceContext {
   readonly repos: AsyncRepositories;
@@ -175,4 +238,6 @@ export interface ServiceContext {
   readonly llm?: LlmPort;
   /** 网络可达性；离线时服务层走降级路径。 */
   readonly network: NetworkMonitorPort;
+  /** 云端端口（auth + sync）；未激活时注入 `createNoopCloud()`。 */
+  readonly cloud: CloudPort;
 }

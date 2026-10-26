@@ -32,6 +32,8 @@ import {
 
 import {
   asyncifyRepositories,
+  createNoopCloud,
+  type CloudPort,
   type HttpPort,
   type LlmPort,
   type NetworkMonitorPort,
@@ -104,6 +106,8 @@ export interface ServiceTestHarnessOptions {
   readonly llm?: LlmPort;
   /** 注入的网络可达性（缺省：在线）。 */
   readonly network?: NetworkMonitorPort;
+  /** 注入的云端端口（缺省：`createNoopCloud()`，即未配置）。 */
+  readonly cloud?: CloudPort;
 }
 
 /**
@@ -155,6 +159,8 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
     network: options.network ?? {
       isOnline: (): boolean => true,
     },
+    // 云端端口默认未配置（sync/auth 服务据此报 NOT_CONFIGURED）。
+    cloud: options.cloud ?? createNoopCloud(),
   };
 
   const insertSource = db.prepare(

@@ -13,6 +13,7 @@
  */
 
 export * from './associationService';
+export * from './authService';
 export * from './contentService';
 export * from './dto';
 export * from './errors';
@@ -24,3 +25,4 @@ export * from './reportService';
 export * from './settingsService';
 export * from './sourceBootstrap';
 export * from './studyService';
+export * from './syncService';

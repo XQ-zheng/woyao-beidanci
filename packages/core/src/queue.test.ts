@@ -1,20 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LearningState } from './models';
-import { createDefaultReviewPlan, createInitialLearningState, STUDY_WINDOW_START_HOUR } from './models';
 import type { ReviewPlan } from './models';
+import { createDefaultReviewPlan, createInitialLearningState, STUDY_WINDOW_START_HOUR } from './models';
 import { buildDailyQueue, createSeededRandom, interleaveWordIds, seededShuffle } from './queue';
 import { InvalidReviewPlanError } from './scheduler';
 
-/** 用本地日历分量构造时刻，保证测试与运行环境的时区无关。 */
-function localTime(
-  year: number,
-  month: number,
-  day: number,
-  hour = STUDY_WINDOW_START_HOUR,
-  minute = 0,
-): Date {
-  return new Date(year, month - 1, day, hour, minute, 0, 0);
+/** 测试统一使用 UTC 计划时区，并通过 `Date.UTC` 构造时刻，因此与宿主机时区无关。 */
+const TEST_TIME_ZONE = 'UTC';
+
+/** 构造某个 UTC 时刻。 */
+function utc(year: number, month: number, day: number, hour = STUDY_WINDOW_START_HOUR, minute = 0): Date {
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
 }
 
 /** 构造一条学习状态；默认是“已复习过且已到期”的词。 */
@@ -23,18 +20,22 @@ function makeState(wordId: string, overrides: Partial<LearningState> = {}): Lear
     userWordId: `uw-${wordId}`,
     deckId: 'deck-1',
     wordId,
-    dueAt: localTime(2025, 6, 5).toISOString(),
+    dueAt: utc(2025, 6, 5).toISOString(),
   });
   return {
     ...base,
-    lastReviewedAt: localTime(2025, 6, 1).toISOString(),
+    lastReviewedAt: utc(2025, 6, 1).toISOString(),
     ...overrides,
   };
 }
 
-/** 构造计划。 */
+/** 构造计划（默认 UTC）。 */
 function makePlan(overrides: Partial<ReviewPlan> = {}): ReviewPlan {
-  return createDefaultReviewPlan({ dailyNewLimit: 10, dailyReviewLimit: 10, ...overrides });
+  return createDefaultReviewPlan(TEST_TIME_ZONE, {
+    dailyNewLimit: 10,
+    dailyReviewLimit: 10,
+    ...overrides,
+  });
 }
 
 /** 断言序列里没有相邻重复。 */
@@ -45,7 +46,7 @@ function expectNoAdjacentDuplicates(wordIds: readonly string[]): void {
 }
 
 describe('buildDailyQueue：基本过滤', () => {
-  const now = localTime(2025, 6, 10, 9);
+  const now = utc(2025, 6, 10, 9);
 
   it('没有任何状态与生词时返回三个空队列', () => {
     const queue = buildDailyQueue([], [], makePlan(), now, 'seed');
@@ -56,15 +57,25 @@ describe('buildDailyQueue：基本过滤', () => {
   it('复习池只保留“已作答且已到期且未屏蔽”的词', () => {
     const states = [
       makeState('w-due'),
-      makeState('w-future', { dueAt: localTime(2025, 6, 20).toISOString() }),
+      makeState('w-future', { dueAt: utc(2025, 6, 20).toISOString() }),
       makeState('w-never-reviewed', { lastReviewedAt: null }),
-      makeState('w-suppressed', { suppressedAt: localTime(2025, 6, 9).toISOString() }),
+      makeState('w-suppressed', { suppressedAt: utc(2025, 6, 9).toISOString() }),
       makeState('w-broken-due', { dueAt: 'not-a-timestamp' }),
     ];
 
     const queue = buildDailyQueue(states, [], makePlan(), now, 'seed');
 
     expect(queue.reviewWordIds).toEqual(['w-due']);
+  });
+
+  it('已建状态但从未作答的词进入新词池，而不是在两个池里都消失', () => {
+    const states = [makeState('w-pending', { lastReviewedAt: null })];
+
+    const queue = buildDailyQueue(states, ['w-unseen'], makePlan(), now, 'seed');
+
+    expect(queue.reviewWordIds).toEqual([]);
+    expect(queue.newWordIds).toEqual(['w-unseen', 'w-pending']);
+    expect(queue.interleavedWordIds).toEqual(['w-unseen', 'w-pending']);
   });
 
   it('到期时间等于 now 时算到期', () => {
@@ -77,8 +88,9 @@ describe('buildDailyQueue：基本过滤', () => {
 
   it('“不再出现”的词同时从复习池与新词池移除', () => {
     const states = [
-      makeState('w-suppressed', { suppressedAt: localTime(2025, 6, 9).toISOString() }),
+      makeState('w-suppressed', { suppressedAt: utc(2025, 6, 9).toISOString() }),
       makeState('w-ok'),
+      makeState('w-suppressed-pending', { lastReviewedAt: null, suppressedAt: utc(2025, 6, 9).toISOString() }),
     ];
 
     const queue = buildDailyQueue(states, ['w-suppressed', 'w-new'], makePlan(), now, 'seed');
@@ -89,15 +101,15 @@ describe('buildDailyQueue：基本过滤', () => {
 });
 
 describe('buildDailyQueue：排序规则', () => {
-  const now = localTime(2025, 6, 10, 9);
+  const now = utc(2025, 6, 10, 9);
 
   it('按 逾期天数 DESC → 权重 DESC → dueAt ASC → wordId ASC 排序', () => {
     const states = [
-      makeState('w-c', { dueAt: localTime(2025, 6, 9, 9).toISOString(), weight: 4 }),
-      makeState('w-d', { dueAt: localTime(2025, 6, 5, 18).toISOString(), weight: 1 }),
-      makeState('w-a', { dueAt: localTime(2025, 6, 5, 9).toISOString(), weight: 1 }),
-      makeState('w-0', { dueAt: localTime(2025, 6, 5, 9).toISOString(), weight: 1 }),
-      makeState('w-b', { dueAt: localTime(2025, 6, 5, 9).toISOString(), weight: 2 }),
+      makeState('w-c', { dueAt: utc(2025, 6, 9, 9).toISOString(), weight: 4 }),
+      makeState('w-d', { dueAt: utc(2025, 6, 5, 18).toISOString(), weight: 1 }),
+      makeState('w-a', { dueAt: utc(2025, 6, 5, 9).toISOString(), weight: 1 }),
+      makeState('w-0', { dueAt: utc(2025, 6, 5, 9).toISOString(), weight: 1 }),
+      makeState('w-b', { dueAt: utc(2025, 6, 5, 9).toISOString(), weight: 2 }),
     ];
 
     const queue = buildDailyQueue(states, [], makePlan(), now, 'seed');
@@ -107,8 +119,8 @@ describe('buildDailyQueue：排序规则', () => {
 
   it('逾期天数优先于权重：高权重但逾期少的词排在后面', () => {
     const states = [
-      makeState('w-heavy-recent', { dueAt: localTime(2025, 6, 9, 9).toISOString(), weight: 4 }),
-      makeState('w-light-overdue', { dueAt: localTime(2025, 6, 1, 9).toISOString(), weight: 0.25 }),
+      makeState('w-heavy-recent', { dueAt: utc(2025, 6, 9, 9).toISOString(), weight: 4 }),
+      makeState('w-light-overdue', { dueAt: utc(2025, 6, 1, 9).toISOString(), weight: 0.25 }),
     ];
 
     const queue = buildDailyQueue(states, [], makePlan(), now, 'seed');
@@ -116,10 +128,22 @@ describe('buildDailyQueue：排序规则', () => {
     expect(queue.reviewWordIds).toEqual(['w-light-overdue', 'w-heavy-recent']);
   });
 
+  it('非法权重按初始权重参与排序，与调度侧的归一化规则一致', () => {
+    const states = [
+      makeState('w-normal', { dueAt: utc(2025, 6, 5, 9).toISOString(), weight: 1.5 }),
+      makeState('w-broken', { dueAt: utc(2025, 6, 5, 9).toISOString(), weight: Number.NaN }),
+    ];
+
+    const queue = buildDailyQueue(states, [], makePlan(), now, 'seed');
+
+    // NaN 归一为初始权重 1，低于 1.5，因此排在后面。
+    expect(queue.reviewWordIds).toEqual(['w-normal', 'w-broken']);
+  });
+
   it('同一词的多条状态只出现一次（保留优先级最高的一条）', () => {
     const states = [
-      makeState('w-x', { dueAt: localTime(2025, 6, 9, 9).toISOString(), weight: 1, deckId: 'deck-a' }),
-      makeState('w-x', { dueAt: localTime(2025, 6, 1, 9).toISOString(), weight: 1, deckId: 'deck-b' }),
+      makeState('w-x', { dueAt: utc(2025, 6, 9, 9).toISOString(), weight: 1, deckId: 'deck-a' }),
+      makeState('w-x', { dueAt: utc(2025, 6, 1, 9).toISOString(), weight: 1, deckId: 'deck-b' }),
     ];
 
     const queue = buildDailyQueue(states, [], makePlan(), now, 'seed');
@@ -129,13 +153,13 @@ describe('buildDailyQueue：排序规则', () => {
 });
 
 describe('buildDailyQueue：每日上限', () => {
-  const now = localTime(2025, 6, 10, 9);
+  const now = utc(2025, 6, 10, 9);
 
   it('复习与新词分别受上限约束', () => {
     const states = [
-      makeState('w-1', { dueAt: localTime(2025, 6, 1).toISOString() }),
-      makeState('w-2', { dueAt: localTime(2025, 6, 2).toISOString() }),
-      makeState('w-3', { dueAt: localTime(2025, 6, 3).toISOString() }),
+      makeState('w-1', { dueAt: utc(2025, 6, 1).toISOString() }),
+      makeState('w-2', { dueAt: utc(2025, 6, 2).toISOString() }),
+      makeState('w-3', { dueAt: utc(2025, 6, 3).toISOString() }),
     ];
     const unseen = ['w-n1', 'w-n2', 'w-n3'];
 
@@ -147,7 +171,7 @@ describe('buildDailyQueue：每日上限', () => {
   });
 
   it('复习上限为 0 时只发新词', () => {
-    const states = [makeState('w-1', { dueAt: localTime(2025, 6, 1).toISOString() })];
+    const states = [makeState('w-1', { dueAt: utc(2025, 6, 1).toISOString() })];
 
     const queue = buildDailyQueue(states, ['w-n1'], makePlan({ dailyReviewLimit: 0 }), now, 'seed');
 
@@ -157,7 +181,7 @@ describe('buildDailyQueue：每日上限', () => {
   });
 
   it('新词上限为 0 时只发复习', () => {
-    const states = [makeState('w-1', { dueAt: localTime(2025, 6, 1).toISOString() })];
+    const states = [makeState('w-1', { dueAt: utc(2025, 6, 1).toISOString() })];
 
     const queue = buildDailyQueue(states, ['w-n1'], makePlan({ dailyNewLimit: 0 }), now, 'seed');
 
@@ -167,8 +191,8 @@ describe('buildDailyQueue：每日上限', () => {
 
   it('积压超过上限时只取优先级最高的一部分，其余留到明天', () => {
     const states = [
-      makeState('w-old', { dueAt: localTime(2025, 5, 1).toISOString() }),
-      makeState('w-newer', { dueAt: localTime(2025, 6, 9).toISOString() }),
+      makeState('w-old', { dueAt: utc(2025, 5, 1).toISOString() }),
+      makeState('w-newer', { dueAt: utc(2025, 6, 9).toISOString() }),
     ];
 
     const queue = buildDailyQueue(states, [], makePlan({ dailyReviewLimit: 1 }), now, 'seed');
@@ -178,12 +202,12 @@ describe('buildDailyQueue：每日上限', () => {
 });
 
 describe('buildDailyQueue：新词池', () => {
-  const now = localTime(2025, 6, 10, 9);
+  const now = utc(2025, 6, 10, 9);
 
-  it('已有学习状态的词不算新词', () => {
+  it('已有学习状态且已作答的词不算新词', () => {
     const states = [
-      makeState('w-learned-due', { dueAt: localTime(2025, 6, 9).toISOString() }),
-      makeState('w-learned-future', { dueAt: localTime(2025, 6, 30).toISOString() }),
+      makeState('w-learned-due', { dueAt: utc(2025, 6, 9).toISOString() }),
+      makeState('w-learned-future', { dueAt: utc(2025, 6, 30).toISOString() }),
     ];
 
     const queue = buildDailyQueue(states, ['w-learned-due', 'w-learned-future', 'w-unseen'], makePlan(), now, 'seed');
@@ -198,15 +222,26 @@ describe('buildDailyQueue：新词池', () => {
 
     expect(queue.newWordIds).toEqual(['w-n3', 'w-n1', 'w-n2']);
   });
+
+  it('新词数量同样受每日上限约束（含从未作答的已建状态词）', () => {
+    const states = [
+      makeState('w-pending-1', { lastReviewedAt: null }),
+      makeState('w-pending-2', { lastReviewedAt: null }),
+    ];
+
+    const queue = buildDailyQueue(states, ['w-n1', 'w-n2'], makePlan({ dailyNewLimit: 3 }), now, 'seed');
+
+    expect(queue.newWordIds).toEqual(['w-n1', 'w-n2', 'w-pending-1']);
+  });
 });
 
 describe('buildDailyQueue：交错', () => {
-  const now = localTime(2025, 6, 10, 9);
+  const now = utc(2025, 6, 10, 9);
 
   function buildMixed(): { reviewWordIds: string[]; newWordIds: string[]; interleavedWordIds: string[] } {
     const states = Array.from({ length: 8 }, (_unused, index) =>
       makeState(`w-r${String(index + 1)}`, {
-        dueAt: localTime(2025, 6, 10 - index, 9).toISOString(),
+        dueAt: utc(2025, 6, 10 - index, 9).toISOString(),
       }),
     );
     const unseen = ['w-n1', 'w-n2'];
@@ -247,7 +282,7 @@ describe('buildDailyQueue：交错', () => {
 
   it('不同 seed 会改变交错顺序', () => {
     const states = Array.from({ length: 8 }, (_unused, index) =>
-      makeState(`w-r${String(index + 1)}`, { dueAt: localTime(2025, 6, 10 - index, 9).toISOString() }),
+      makeState(`w-r${String(index + 1)}`, { dueAt: utc(2025, 6, 10 - index, 9).toISOString() }),
     );
     const unseen = ['w-n1', 'w-n2'];
     const orders = new Set<string>();
@@ -261,7 +296,7 @@ describe('buildDailyQueue：交错', () => {
 
   it('新词不会被整体堆到末尾（至少某些种子下会提前插入）', () => {
     const states = Array.from({ length: 8 }, (_unused, index) =>
-      makeState(`w-r${String(index + 1)}`, { dueAt: localTime(2025, 6, 10 - index, 9).toISOString() }),
+      makeState(`w-r${String(index + 1)}`, { dueAt: utc(2025, 6, 10 - index, 9).toISOString() }),
     );
     const unseen = ['w-n1', 'w-n2'];
     const concatenated = ['w-r1', 'w-r2', 'w-r3', 'w-r4', 'w-r5', 'w-r6', 'w-r7', 'w-r8', 'w-n1', 'w-n2'];
@@ -275,7 +310,7 @@ describe('buildDailyQueue：交错', () => {
 
   it('只有复习或只有新词时不做交错', () => {
     const onlyReviews = buildDailyQueue(
-      [makeState('w-1', { dueAt: localTime(2025, 6, 1).toISOString() })],
+      [makeState('w-1', { dueAt: utc(2025, 6, 1).toISOString() })],
       [],
       makePlan(),
       now,
@@ -289,10 +324,13 @@ describe('buildDailyQueue：交错', () => {
 });
 
 describe('buildDailyQueue：输入校验', () => {
-  const now = localTime(2025, 6, 10, 9);
+  const now = utc(2025, 6, 10, 9);
 
   it('非法计划抛 InvalidReviewPlanError', () => {
     expect(() => buildDailyQueue([], [], makePlan({ intervalsDays: [2, 2] }), now, 'seed')).toThrow(
+      InvalidReviewPlanError,
+    );
+    expect(() => buildDailyQueue([], [], makePlan({ timeZone: 'Mars/Olympus' }), now, 'seed')).toThrow(
       InvalidReviewPlanError,
     );
   });
@@ -303,8 +341,8 @@ describe('buildDailyQueue：输入校验', () => {
 
   it('不修改传入的状态数组顺序', () => {
     const states = [
-      makeState('w-b', { dueAt: localTime(2025, 6, 1).toISOString() }),
-      makeState('w-a', { dueAt: localTime(2025, 6, 2).toISOString() }),
+      makeState('w-b', { dueAt: utc(2025, 6, 1).toISOString() }),
+      makeState('w-a', { dueAt: utc(2025, 6, 2).toISOString() }),
     ];
 
     buildDailyQueue(states, [], makePlan(), now, 'seed');
@@ -314,7 +352,7 @@ describe('buildDailyQueue：输入校验', () => {
 });
 
 describe('interleaveWordIds', () => {
-  it('空池直接返回另一池的副本', () => {
+  it('空池时返回另一池', () => {
     expect(interleaveWordIds([], ['n1'], 'seed')).toEqual(['n1']);
     expect(interleaveWordIds(['r1'], [], 'seed')).toEqual(['r1']);
     expect(interleaveWordIds([], [], 'seed')).toEqual([]);
@@ -339,6 +377,31 @@ describe('interleaveWordIds', () => {
       expectNoAdjacentDuplicates(result);
       expect(result).toHaveLength(reviews.length + news.length);
     }
+  });
+
+  it('两池完全重叠时不产生相邻重复（必要时去重重复副本）', () => {
+    expect(interleaveWordIds(['x'], ['x'], 'seed')).toEqual(['x']);
+    // 词跨池重复出现但不相邻时保留两个条目，只保证“不相邻”。
+    const overlapped = interleaveWordIds(['x', 'y'], ['x'], 'seed');
+    expectNoAdjacentDuplicates(overlapped);
+    expect([...overlapped].sort()).toEqual(['x', 'x', 'y']);
+    expectNoAdjacentDuplicates(interleaveWordIds(['x', 'y', 'z'], ['y', 'z'], 'seed'));
+  });
+
+  it('单侧池内部有重复时也不产生相邻重复', () => {
+    const result = interleaveWordIds(['a', 'a', 'b'], ['c'], 'seed');
+
+    expectNoAdjacentDuplicates(result);
+    expect(result).toContain('b');
+    expect(result).toContain('c');
+  });
+
+  it('不会凭空造出新元素', () => {
+    const result = interleaveWordIds(['x', 'y'], ['y', 'x'], 'seed');
+
+    result.forEach((wordId) => {
+      expect(['x', 'y']).toContain(wordId);
+    });
   });
 });
 

@@ -1,15 +1,44 @@
 /**
- * 可注入时钟与 ISO 时间工具。
+ * 可注入时钟与**时区感知**的时间工具。
  *
- * 约定：核心调度**绝不**调用 `Date.now()`。所有时间点都由调用方以 `now: Date`
- * 参数或 `Clock` 注入，这样测试能在固定时钟下断言到期时间，跨端行为也完全一致。
- * `createSystemClock()` 是唯一允许读取系统时间的工厂，仅供外壳/应用服务层使用。
+ * 两条不可违反的约定：
+ * 1. 核心调度**绝不**调用 `Date.now()`：时间点一律由调用方以 `now: Date` 参数或 `Clock` 注入；
+ *    `createSystemClock()` 是唯一允许读取系统时间的工厂，仅供外壳/应用服务层使用。
+ * 2. 核心**绝不**使用宿主机的本地时区（`getFullYear` / `getMonth` / `getDate` / `getHours`）：
+ *    本地日历一律通过 `Intl.DateTimeFormat` 指定的 IANA 时区换算，
+ *    否则同一份学习数据在 UTC 与 Asia/Shanghai 的设备上会得到不同的到期时间。
  */
 
 /** 可注入时钟。 */
 export interface Clock {
   /** 返回当前时刻的副本。 */
   now(): Date;
+}
+
+/** 某个时区内的公历日期时间分量（不含毫秒）。 */
+export interface ZonedDateTimeParts {
+  /** 年。 */
+  readonly year: number;
+  /** 月，`1..12`。 */
+  readonly month: number;
+  /** 日，`1..31`。 */
+  readonly day: number;
+  /** 时，`0..23`。 */
+  readonly hour: number;
+  /** 分，`0..59`。 */
+  readonly minute: number;
+  /** 秒，`0..59`。 */
+  readonly second: number;
+}
+
+/** 公历日期（仅年月日）。 */
+export interface CivilDate {
+  /** 年。 */
+  readonly year: number;
+  /** 月，`1..12`。 */
+  readonly month: number;
+  /** 日，`1..31`。 */
+  readonly day: number;
 }
 
 /** 时间戳解析/格式化失败时抛出的类型化错误。 */
@@ -28,6 +57,75 @@ export class InvalidInstantError extends Error {
     super(message);
     this.name = 'InvalidInstantError';
     this.field = field;
+  }
+}
+
+/** IANA 时区标识非法时抛出的类型化错误。 */
+export class InvalidTimeZoneError extends Error {
+  /** 错误码。 */
+  readonly code = 'INVALID_TIME_ZONE';
+
+  /** 非法的时区标识。 */
+  readonly timeZone: string;
+
+  /**
+   * @param timeZone 非法的时区标识。
+   */
+  constructor(timeZone: string) {
+    super(`无法识别的 IANA 时区：${String(timeZone)}`);
+    this.name = 'InvalidTimeZoneError';
+    this.timeZone = String(timeZone);
+  }
+}
+
+/** `Intl.DateTimeFormat` 构造开销较大，按时区缓存。 */
+const partsFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * 取（并缓存）某个时区的分量格式化器；非法时区会抛 `InvalidTimeZoneError`。
+ *
+ * @param timeZone IANA 时区标识。
+ * @returns 分量格式化器。
+ */
+function partsFormatterOf(timeZone: string): Intl.DateTimeFormat {
+  const cached = partsFormatterCache.get(timeZone);
+  if (cached !== undefined) {
+    return cached;
+  }
+  if (typeof timeZone !== 'string' || timeZone.trim() === '') {
+    throw new InvalidTimeZoneError(timeZone);
+  }
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    throw new InvalidTimeZoneError(timeZone);
+  }
+  partsFormatterCache.set(timeZone, formatter);
+  return formatter;
+}
+
+/**
+ * 判断字符串是否是运行时认识的 IANA 时区。
+ *
+ * @param timeZone 待校验的时区标识。
+ * @returns 是否合法。
+ */
+export function isValidTimeZone(timeZone: string): boolean {
+  try {
+    partsFormatterOf(timeZone);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -96,6 +194,167 @@ export function toIsoInstant(instant: Date): string {
 export function addMilliseconds(instant: Date, milliseconds: number): Date {
   assertValidInstant(instant, 'instant');
   return new Date(instant.getTime() + milliseconds);
+}
+
+/**
+ * 取某个时刻在指定时区内的日历分量（完全不受宿主机时区影响）。
+ *
+ * @param instant 时刻。
+ * @param timeZone IANA 时区标识。
+ * @returns 该时区内的年月日时分秒。
+ */
+export function zonedDateTimeParts(instant: Date, timeZone: string): ZonedDateTimeParts {
+  assertValidInstant(instant, 'instant');
+  const parts = partsFormatterOf(timeZone).formatToParts(instant);
+  let year = Number.NaN;
+  let month = Number.NaN;
+  let day = Number.NaN;
+  let hour = Number.NaN;
+  let minute = Number.NaN;
+  let second = Number.NaN;
+
+  for (const part of parts) {
+    switch (part.type) {
+      case 'year':
+        year = Number(part.value);
+        break;
+      case 'month':
+        month = Number(part.value);
+        break;
+      case 'day':
+        day = Number(part.value);
+        break;
+      case 'hour':
+        hour = Number(part.value);
+        break;
+      case 'minute':
+        minute = Number(part.value);
+        break;
+      case 'second':
+        second = Number(part.value);
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
+    throw new InvalidInstantError('instant', `无法在时区 ${timeZone} 内解析时刻分量`);
+  }
+
+  return {
+    year,
+    month,
+    day,
+    // 个别 ICU 版本在午夜返回 24，这里统一折回 0。
+    hour: Number.isNaN(hour) ? 0 : hour % 24,
+    minute: Number.isNaN(minute) ? 0 : minute,
+    second: Number.isNaN(second) ? 0 : second,
+  };
+}
+
+/**
+ * 把时刻折算为指定时区下的日历日序号（用于“逾期天数”等日历日差值）。
+ *
+ * 用 `Date.UTC` 而非宿主机本地方法做归一，因此结果与宿主时区无关。
+ *
+ * @param instant 时刻。
+ * @param timeZone IANA 时区标识。
+ * @returns 日历日序号（同一时区内每天 +1）。
+ */
+export function zonedDayNumber(instant: Date, timeZone: string): number {
+  const parts = zonedDateTimeParts(instant, timeZone);
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000);
+}
+
+/**
+ * 计算某时刻在指定时区的 UTC 偏移毫秒数（东为正）。
+ *
+ * @param instantMilliseconds 时刻毫秒。
+ * @param timeZone IANA 时区标识。
+ * @returns 偏移毫秒（整分钟）。
+ */
+function offsetMillisecondsAt(instantMilliseconds: number, timeZone: string): number {
+  const truncated = Math.floor(instantMilliseconds / 1000) * 1000;
+  const parts = zonedDateTimeParts(new Date(truncated), timeZone);
+  const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return asUtc - truncated;
+}
+
+/**
+ * 判断两个分量是否表示同一面墙上时间（只比较年月日时分秒）。
+ *
+ * @param left 左分量。
+ * @param right 右分量。
+ * @returns 是否相同。
+ */
+function isSameWallTime(left: ZonedDateTimeParts, right: ZonedDateTimeParts): boolean {
+  return (
+    left.year === right.year &&
+    left.month === right.month &&
+    left.day === right.day &&
+    left.hour === right.hour &&
+    left.minute === right.minute &&
+    left.second === right.second
+  );
+}
+
+/**
+ * 把“某时区的本地墙上时间”换算成 UTC 时刻，确定性处理 DST。
+ *
+ * - 正常时间：唯一解。
+ * - **重复时间**（秋季回拨，同一墙上时间出现两次）：取**第一次**出现（较早的时刻）。
+ * - **不存在的时间**（春季前拨造成的空洞，含整日被跳过的极端情况）：
+ *   取“下一个有效时刻”，即按空洞长度顺延（例如 02:30 不存在 → 03:30）。
+ *
+ * 全程只用 `Intl` 提供的时区数据与 `Date.UTC`，不依赖宿主机本地时区。
+ *
+ * @param parts 目标墙上时间分量。
+ * @param timeZone IANA 时区标识。
+ * @returns 对应的 UTC 时刻。
+ */
+export function localWallTimeToInstant(parts: ZonedDateTimeParts, timeZone: string): Date {
+  const wallMilliseconds = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+
+  const firstGuess = wallMilliseconds - offsetMillisecondsAt(wallMilliseconds, timeZone);
+  const secondGuess = wallMilliseconds - offsetMillisecondsAt(firstGuess, timeZone);
+  const candidates =
+    firstGuess === secondGuess ? [firstGuess] : [firstGuess, secondGuess];
+
+  const matchingCandidates = candidates.filter((candidate) =>
+    isSameWallTime(zonedDateTimeParts(new Date(candidate), timeZone), parts),
+  );
+
+  if (matchingCandidates.length > 0) {
+    // 重复时间可能出现两个合法解，取较早者 = 第一次出现。
+    return new Date(Math.min(...matchingCandidates));
+  }
+
+  // 墙上时间落在 DST 空洞里：取空洞之后的第一个有效时刻。
+  return new Date(Math.max(...candidates));
+}
+
+/**
+ * 公历日期加减天数（只做日历运算，不涉及时区与 DST）。
+ *
+ * @param date 基准日期。
+ * @param days 天数偏移，可为负。
+ * @returns 新的公历日期。
+ */
+export function addDaysToCivilDate(date: CivilDate, days: number): CivilDate {
+  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
 }
 
 /**

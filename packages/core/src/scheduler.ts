@@ -5,31 +5,43 @@
  * - 新词 `stage=-1`；答对且“认识”`-1 → 0` 并使用 `intervalsDays[0]`；
  * - 答对且“认识”先升 stage（上限 `intervalsDays.length-1`）再用新 stage 的间隔；
  * - 答错 `stage=max(stage-1,-1)`、连对清零、错次 +1、权重 ×1.75、10 分钟后重练；
- * - 答对但“不认识”阶段不升、权重不变、安排次日；
+ * - 答对但“不认识”阶段不升、权重**原样不变**、安排次日；
  * - 权重乘数 0.8 / 1.75，钳制到 `[0.25, 4.0]`；
- * - 到期时刻 = 作答时间 + N 天的目标本地日 09:00（无学习时段时的默认窗口）。
+ * - 到期时刻 = 作答时间 + N 天，换算到 `plan.timeZone` 的目标本地日 09:00 再转回 UTC。
  *
- * 时间全部由参数 `now` / `answer.answeredAt` 注入，函数是纯函数：不读系统时钟、不改入参。
+ * 两条不变量：
+ * 1. 时间是注入的：函数不读系统时钟，也不使用宿主机本地时区；
+ * 2. 永远以 `answer.answeredAt` 为准计算并写入 `lastReviewedAt`：绝不改写作答时间。
+ *    若作答时间明显晚于 `now`，抛 `ClockSkewError`，由应用服务层决定如何提示/校正。
  */
 
-import { addMilliseconds, parseIsoInstant, toIsoInstant } from './clock';
+import {
+  addDaysToCivilDate,
+  addMilliseconds,
+  isValidTimeZone,
+  localWallTimeToInstant,
+  parseIsoInstant,
+  toIsoInstant,
+  zonedDateTimeParts,
+} from './clock';
+import type { CivilDate } from './clock';
 import type { AnswerInput, LearningState, ReviewPlan } from './models';
 import {
   DAILY_LIMIT_MAX,
   DAILY_LIMIT_MIN,
-  INITIAL_WEIGHT,
   INTERVAL_DAYS_MAX,
   INTERVAL_DAYS_MIN,
   INTERVAL_NODE_COUNT_MAX,
   INTERVAL_NODE_COUNT_MIN,
+  MAX_ANSWERED_AT_CLOCK_SKEW_MS,
   RECOGNITION_UNKNOWN_INTERVAL_DAYS,
   RETRY_AFTER_WRONG_MS,
   STAGE_NEVER_REVIEWED,
   STUDY_WINDOW_START_HOUR,
-  WEIGHT_MAX,
-  WEIGHT_MIN,
   WEIGHT_MULTIPLIER_ON_CORRECT_KNOWN,
   WEIGHT_MULTIPLIER_ON_WRONG,
+  clampWeight,
+  normalizeWeight,
 } from './models';
 
 /** 一条复习计划参数的问题描述。 */
@@ -45,11 +57,7 @@ export type ReviewPlanValidationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly issues: readonly ReviewPlanValidationIssue[] };
 
-/**
- * 复习计划非法时抛出的类型化错误。
- *
- * 设计 5.1 明确要求“拒绝保存并指出字段”，因此这里绝不静默回退到默认间隔。
- */
+/** 复习计划非法时抛出的类型化错误。 */
 export class InvalidReviewPlanError extends Error {
   /** 错误码，便于应用服务映射。 */
   readonly code = 'INVALID_REVIEW_PLAN';
@@ -67,7 +75,7 @@ export class InvalidReviewPlanError extends Error {
   }
 }
 
-/** 作答时间非法时抛出的类型化错误（字段名记录在 `field` 上）。 */
+/** 作答输入非法时抛出的类型化错误（字段名记录在 `field` 上）。 */
 export class InvalidAnswerError extends Error {
   /** 错误码，便于应用服务映射。 */
   readonly code = 'INVALID_ANSWER';
@@ -86,6 +94,62 @@ export class InvalidAnswerError extends Error {
   }
 }
 
+/** 学习状态数据结构非法时抛出的类型化错误。 */
+export class InvalidLearningStateError extends Error {
+  /** 错误码，便于应用服务映射。 */
+  readonly code = 'INVALID_LEARNING_STATE';
+
+  /** 出错的字段名。 */
+  readonly field: string;
+
+  /**
+   * @param field 出错的字段名。
+   * @param message 错误说明。
+   */
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = 'InvalidLearningStateError';
+    this.field = field;
+  }
+}
+
+/**
+ * 时钟异常：作答时间明显晚于注入的当前时刻。
+ *
+ * 核心层**不**改写 `answeredAt`（否则状态快照会与不可变事件不一致），
+ * 只把事实抛给应用服务层：提示用户校准时钟、按事件重放或交由同步冲突处理。
+ */
+export class ClockSkewError extends Error {
+  /** 错误码。 */
+  readonly code = 'CLOCK_SKEW';
+
+  /** 作答时间。 */
+  readonly answeredAt: string;
+
+  /** 注入的当前时刻。 */
+  readonly now: string;
+
+  /** 作答时间超前注入时钟的毫秒数。 */
+  readonly skewMilliseconds: number;
+
+  /**
+   * @param answeredAt 作答时间（ISO 字符串）。
+   * @param now 注入的当前时刻（ISO 字符串）。
+   * @param skewMilliseconds 超前毫秒数。
+   */
+  constructor(answeredAt: string, now: string, skewMilliseconds: number) {
+    super(
+      `作答时间 ${answeredAt} 晚于当前时刻 ${now} 达 ${String(skewMilliseconds)} 毫秒，超出允许的时钟偏差 ${String(
+        MAX_ANSWERED_AT_CLOCK_SKEW_MS,
+      )} 毫秒`,
+    );
+    this.name = 'ClockSkewError';
+    this.answeredAt = answeredAt;
+    this.now = now;
+    this.skewMilliseconds = skewMilliseconds;
+  }
+}
+
 /**
  * 校验整数天数节点：必须为整数、落在 `1..365`、严格递增、去重。
  *
@@ -95,7 +159,10 @@ export class InvalidAnswerError extends Error {
 function collectIntervalIssues(intervalsDays: readonly number[]): ReviewPlanValidationIssue[] {
   const issues: ReviewPlanValidationIssue[] = [];
 
-  if (intervalsDays.length < INTERVAL_NODE_COUNT_MIN || intervalsDays.length > INTERVAL_NODE_COUNT_MAX) {
+  if (
+    intervalsDays.length < INTERVAL_NODE_COUNT_MIN ||
+    intervalsDays.length > INTERVAL_NODE_COUNT_MAX
+  ) {
     issues.push({
       field: 'intervalsDays',
       message: `节点数量必须是 ${INTERVAL_NODE_COUNT_MIN}..${INTERVAL_NODE_COUNT_MAX} 个，当前 ${intervalsDays.length} 个`,
@@ -135,7 +202,7 @@ function collectIntervalIssues(intervalsDays: readonly number[]): ReviewPlanVali
 }
 
 /**
- * 校验每日数量：必须为整数、落在 `0..500`，且新词与复习不能同时为 0。
+ * 校验每日数量：必须为整数、落在 `0..500`。
  *
  * @param field 字段名。
  * @param value 待校验的数量。
@@ -163,13 +230,19 @@ function collectDailyLimitIssues(field: string, value: number): ReviewPlanValida
  * @returns 校验结果。
  */
 export function validateReviewPlan(plan: ReviewPlan): ReviewPlanValidationResult {
-  const issues: ReviewPlanValidationIssue[] = [];
-
   if (plan === null || typeof plan !== 'object') {
     return {
       ok: false,
       issues: [{ field: 'plan', message: '复习计划不能为空' }],
     };
+  }
+
+  const issues: ReviewPlanValidationIssue[] = [];
+
+  if (typeof plan.timeZone !== 'string' || plan.timeZone.trim() === '') {
+    issues.push({ field: 'timeZone', message: '必须填写计划时区（IANA 标识，例如 Asia/Shanghai）' });
+  } else if (!isValidTimeZone(plan.timeZone)) {
+    issues.push({ field: 'timeZone', message: `不是运行时认识的 IANA 时区：${plan.timeZone}` });
   }
 
   if (!Array.isArray(plan.intervalsDays)) {
@@ -196,12 +269,14 @@ export function validateReviewPlan(plan: ReviewPlan): ReviewPlanValidationResult
  * 校验复习计划，非法时抛出 `InvalidReviewPlanError`。
  *
  * @param plan 待校验的计划。
+ * @returns 通过校验的计划（便于链式使用）。
  */
-export function assertValidReviewPlan(plan: ReviewPlan): void {
+export function assertValidReviewPlan(plan: ReviewPlan): ReviewPlan {
   const result = validateReviewPlan(plan);
   if (!result.ok) {
     throw new InvalidReviewPlanError(result.issues);
   }
+  return plan;
 }
 
 /**
@@ -228,78 +303,144 @@ export function intervalDaysForStage(plan: ReviewPlan, stage: number): number {
 }
 
 /**
- * 把权重钳制到 `[0.25, 4.0]`；历史数据里的非法值回退到初始权重。
+ * 计算“作答时间 + N 天”在计划时区内的目标本地日 09:00，并转换为 UTC 时刻。
  *
- * @param weight 待钳制的权重。
- * @returns 合法权重。
- */
-export function clampWeight(weight: number): number {
-  if (typeof weight !== 'number' || !Number.isFinite(weight)) {
-    return INITIAL_WEIGHT;
-  }
-  return Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, weight));
-}
-
-/**
- * 计算“作答时间 + N 天”的目标本地日学习窗口开始时刻（默认本地 09:00）。
- *
- * 按设计 5.1：到期时刻由目标本地日与学习窗口开始时刻决定；
- * 若所得时刻不晚于作答时刻（例如 DST 折返或调用方传 0 天），顺延到下一个有效窗口，
+ * 设计 5.1：到期时刻由目标本地日与学习窗口开始时刻决定；
+ * 若所得时刻不晚于作答时刻（DST 空洞顺延、或调用方传入 0 天），顺延到下一个有效窗口，
  * 避免当天提前作答后立刻再次到期。
  *
  * @param answerInstant 作答时刻。
  * @param intervalDays 间隔天数，必须是 `1..365` 的整数。
- * @returns 到期时刻。
+ * @param timeZone 计划时区（IANA 标识）。
+ * @returns 到期时刻（UTC）。
  */
-export function nextDueInStudyWindow(answerInstant: Date, intervalDays: number): Date {
+export function nextDueInStudyWindow(
+  answerInstant: Date,
+  intervalDays: number,
+  timeZone: string,
+): Date {
   if (Number.isNaN(answerInstant.getTime())) {
     throw new InvalidAnswerError('answeredAt', '作答时间无效，无法计算到期时间');
   }
-  if (!Number.isInteger(intervalDays) || intervalDays < INTERVAL_DAYS_MIN || intervalDays > INTERVAL_DAYS_MAX) {
+  if (
+    !Number.isInteger(intervalDays) ||
+    intervalDays < INTERVAL_DAYS_MIN ||
+    intervalDays > INTERVAL_DAYS_MAX
+  ) {
     throw new RangeError(
       `到期间隔必须是 ${INTERVAL_DAYS_MIN}..${INTERVAL_DAYS_MAX} 的整数天，收到 ${String(intervalDays)}`,
     );
   }
 
+  const answerParts = zonedDateTimeParts(answerInstant, timeZone);
   const answerMilliseconds = answerInstant.getTime();
-  let dayOffset = intervalDays;
-  let candidate = startOfStudyDay(answerInstant, dayOffset);
+  const answerDate: CivilDate = {
+    year: answerParts.year,
+    month: answerParts.month,
+    day: answerParts.day,
+  };
 
+  let dayOffset = intervalDays;
+  let candidate = windowStartOf(addDaysToCivilDate(answerDate, dayOffset), timeZone);
   while (candidate.getTime() <= answerMilliseconds) {
     dayOffset += 1;
     if (dayOffset > intervalDays + INTERVAL_DAYS_MAX) {
       throw new RangeError('无法计算出晚于作答时刻的学习窗口');
     }
-    candidate = startOfStudyDay(answerInstant, dayOffset);
+    candidate = windowStartOf(addDaysToCivilDate(answerDate, dayOffset), timeZone);
   }
 
   return candidate;
 }
 
 /**
- * 以 `reference` 的本地日历日 + `dayOffset` 天、`STUDY_WINDOW_START_HOUR` 点构造时刻。
+ * 取某个公历日在指定时区的学习窗口开始时刻（09:00 墙上时间 → UTC 时刻）。
  *
- * 使用年/月/日分量加法而不是毫秒加法，跨 DST 时依然落在“目标本地日”的窗口开始时刻。
- *
- * @param reference 参考时刻。
- * @param dayOffset 本地日历日偏移。
- * @returns 目标时刻。
+ * @param date 公历日。
+ * @param timeZone 计划时区。
+ * @returns 该日窗口开始的 UTC 时刻。
  */
-function startOfStudyDay(reference: Date, dayOffset: number): Date {
-  return new Date(
-    reference.getFullYear(),
-    reference.getMonth(),
-    reference.getDate() + dayOffset,
-    STUDY_WINDOW_START_HOUR,
-    0,
-    0,
-    0,
+function windowStartOf(date: CivilDate, timeZone: string): Date {
+  return localWallTimeToInstant(
+    {
+      year: date.year,
+      month: date.month,
+      day: date.day,
+      hour: STUDY_WINDOW_START_HOUR,
+      minute: 0,
+      second: 0,
+    },
+    timeZone,
   );
 }
 
 /**
- * 解析作答时刻：`answeredAt` 为准；若晚于注入时钟 `now`（时钟回拨/偏差），
- * 以 `now` 为准，避免生成落在未来的到期时间。
+ * 校验学习状态的数据结构，非法时抛 `InvalidLearningStateError`。
+ *
+ * 目的是把“库里读到脏数据”变成可识别的类型化错误，而不是抛出裸 `TypeError`
+ * 或静默把未知值当成某个默认值。
+ *
+ * @param state 待校验的学习状态。
+ */
+export function assertValidLearningState(state: LearningState): void {
+  if (state === null || typeof state !== 'object') {
+    throw new InvalidLearningStateError('state', '学习状态不能为空');
+  }
+
+  const identifiers: ReadonlyArray<keyof Pick<LearningState, 'userWordId' | 'deckId' | 'wordId'>> = [
+    'userWordId',
+    'deckId',
+    'wordId',
+  ];
+  for (const field of identifiers) {
+    const value = state[field];
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new InvalidLearningStateError(field, `学习状态的 ${field} 必须是非空字符串`);
+    }
+  }
+
+  const numbers: ReadonlyArray<
+    keyof Pick<LearningState, 'stage' | 'correctCount' | 'wrongCount' | 'streakCorrect' | 'weight'>
+  > = ['stage', 'correctCount', 'wrongCount', 'streakCorrect', 'weight'];
+  for (const field of numbers) {
+    const value = state[field];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new InvalidLearningStateError(field, `学习状态的 ${field} 必须是有限数字，当前 ${String(value)}`);
+    }
+  }
+
+  parseIsoInstantSafe(state.dueAt, 'dueAt');
+  if (state.lastReviewedAt !== null) {
+    parseIsoInstantSafe(state.lastReviewedAt, 'lastReviewedAt');
+  }
+  if (state.suppressedAt !== null) {
+    parseIsoInstantSafe(state.suppressedAt, 'suppressedAt');
+  }
+}
+
+/**
+ * 解析学习状态里的时间字段，失败时抛 `InvalidLearningStateError`。
+ *
+ * @param value 时间字符串。
+ * @param field 字段名。
+ */
+function parseIsoInstantSafe(value: string, field: string): void {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new InvalidLearningStateError(field, `学习状态的 ${field} 必须是非空 ISO 8601 时间字符串`);
+  }
+  try {
+    parseIsoInstant(value, field);
+  } catch {
+    throw new InvalidLearningStateError(field, `学习状态的 ${field} 不是合法时间：${value}`);
+  }
+}
+
+/**
+ * 解析作答时刻：**始终以 `answeredAt` 为准**。
+ *
+ * 若作答时间晚于注入时钟超过 `MAX_ANSWERED_AT_CLOCK_SKEW_MS`，
+ * 抛 `ClockSkewError`（不改写时间、不修改任何状态）；
+ * 小于容差的超前视为正常延迟，照样按 `answeredAt` 计算。
  *
  * @param answeredAt 作答时间字符串。
  * @param now 注入的当前时刻。
@@ -317,7 +458,32 @@ function resolveAnswerInstant(answeredAt: string, now: Date): Date {
     throw new InvalidAnswerError('answeredAt', `无法解析作答时间：${String(answeredAt)}`);
   }
 
-  return parsed.getTime() > now.getTime() ? new Date(now.getTime()) : parsed;
+  const skewMilliseconds = parsed.getTime() - now.getTime();
+  if (skewMilliseconds > MAX_ANSWERED_AT_CLOCK_SKEW_MS) {
+    throw new ClockSkewError(toIsoInstant(parsed), toIsoInstant(now), skewMilliseconds);
+  }
+
+  return parsed;
+}
+
+/**
+ * 校验作答输入：`recognition` 只能是 `KNOWN` / `UNKNOWN`。
+ *
+ * @param answer 作答输入。
+ */
+function assertValidAnswer(answer: AnswerInput): void {
+  if (answer === null || typeof answer !== 'object') {
+    throw new InvalidAnswerError('answer', '作答输入不能为空');
+  }
+  if (answer.recognition !== 'KNOWN' && answer.recognition !== 'UNKNOWN') {
+    throw new InvalidAnswerError(
+      'recognition',
+      `recognition 只能是 KNOWN 或 UNKNOWN，收到 ${String(answer.recognition)}`,
+    );
+  }
+  if (typeof answer.isCorrect !== 'boolean') {
+    throw new InvalidAnswerError('isCorrect', 'isCorrect 必须是布尔值');
+  }
 }
 
 /**
@@ -328,9 +494,6 @@ function resolveAnswerInstant(answeredAt: string, now: Date): Date {
  * @returns 合法阶段值。
  */
 function normalizeStage(stage: number, lastStage: number): number {
-  if (!Number.isFinite(stage)) {
-    return STAGE_NEVER_REVIEWED;
-  }
   return Math.min(Math.max(Math.trunc(stage), STAGE_NEVER_REVIEWED), lastStage);
 }
 
@@ -340,10 +503,12 @@ function normalizeStage(stage: number, lastStage: number): number {
  * @param state 作答前的学习状态。
  * @param answer 作答输入。
  * @param plan 当前生效的复习计划。
- * @param now 注入的当前时刻（用于校验/兜底作答时间）。
+ * @param now 注入的当前时刻（仅用于时钟偏差检查，不参与到期时间基准）。
  * @returns 作答后的新学习状态。
  * @throws {InvalidReviewPlanError} 计划参数非法。
- * @throws {InvalidAnswerError} 作答时间非法。
+ * @throws {InvalidAnswerError} 作答输入非法。
+ * @throws {InvalidLearningStateError} 学习状态数据结构非法。
+ * @throws {ClockSkewError} 作答时间明显晚于注入时钟。
  */
 export function nextLearningState(
   state: LearningState,
@@ -352,6 +517,8 @@ export function nextLearningState(
   now: Date,
 ): LearningState {
   assertValidReviewPlan(plan);
+  assertValidLearningState(state);
+  assertValidAnswer(answer);
 
   const answerInstant = resolveAnswerInstant(answer.answeredAt, now);
   const answeredAtIso = toIsoInstant(answerInstant);
@@ -368,14 +535,18 @@ export function nextLearningState(
       correctCount: state.correctCount,
       wrongCount: state.wrongCount + 1,
       streakCorrect: 0,
-      weight: clampWeight(safeWeight(state.weight) * WEIGHT_MULTIPLIER_ON_WRONG),
+      weight: clampWeight(normalizeWeight(state.weight) * WEIGHT_MULTIPLIER_ON_WRONG),
     };
   }
 
   // 答对且“认识”：先升阶段，再用新阶段的间隔；权重 ×0.8。
   if (answer.recognition === 'KNOWN') {
     const stage = Math.min(stageBefore + 1, lastStage);
-    const dueAt = nextDueInStudyWindow(answerInstant, intervalDaysForStage(plan, stage));
+    const dueAt = nextDueInStudyWindow(
+      answerInstant,
+      intervalDaysForStage(plan, stage),
+      plan.timeZone,
+    );
 
     return {
       ...state,
@@ -385,12 +556,16 @@ export function nextLearningState(
       correctCount: state.correctCount + 1,
       wrongCount: state.wrongCount,
       streakCorrect: state.streakCorrect + 1,
-      weight: clampWeight(safeWeight(state.weight) * WEIGHT_MULTIPLIER_ON_CORRECT_KNOWN),
+      weight: clampWeight(normalizeWeight(state.weight) * WEIGHT_MULTIPLIER_ON_CORRECT_KNOWN),
     };
   }
 
-  // 答对但“不认识”：阶段不升、权重不变，安排次日。
-  const dueAt = nextDueInStudyWindow(answerInstant, RECOGNITION_UNKNOWN_INTERVAL_DAYS);
+  // 答对但“不认识”：阶段不升、权重**原样不变**（设计 5.1），安排次日。
+  const dueAt = nextDueInStudyWindow(
+    answerInstant,
+    RECOGNITION_UNKNOWN_INTERVAL_DAYS,
+    plan.timeZone,
+  );
 
   return {
     ...state,
@@ -400,19 +575,6 @@ export function nextLearningState(
     correctCount: state.correctCount + 1,
     wrongCount: state.wrongCount,
     streakCorrect: state.streakCorrect + 1,
-    weight: clampWeight(safeWeight(state.weight)),
+    weight: state.weight,
   };
-}
-
-/**
- * 读取状态的权重，非法时回退到初始权重（不修改入参）。
- *
- * @param weight 历史权重值。
- * @returns 可参与乘法的权重。
- */
-function safeWeight(weight: number): number {
-  if (typeof weight !== 'number' || !Number.isFinite(weight)) {
-    return INITIAL_WEIGHT;
-  }
-  return weight;
 }

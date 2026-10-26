@@ -4,17 +4,18 @@
  * 规则来自系统设计 5.2：
  * - 复习池：`lastReviewedAt != null` 且 `dueAt <= now`，并按
  *   `逾期天数 DESC → 权重 DESC → 到期时间 ASC → wordId ASC` 排序；
- *   逾期天数按**本地日历日**差值计算（不是毫秒除法），因此“昨天 23:59 到期、
- *   今天 00:01 作答”算逾期 1 天，符合“逾期天数”的直觉。
- * - 新词池：只取“未见过”的词（传入的 `unseenWordIds` 去掉已有学习状态的词），
- *   并保持调用方给出的词库顺序（`deckOrder`），不用未知词频伪造优先级。
+ *   逾期天数按 **`plan.timeZone` 下的本地日历日** 差值计算（不是毫秒除法，也不用宿主机时区），
+ *   因此“昨天 23:59 到期、今天 00:01 作答”算逾期 1 天。
+ * - 新词池：只取“未见过”的词 —— 既包括调用方给出的 `unseenWordIds`（保持词库顺序），
+ *   也包括**已建状态但从未作答**（`lastReviewedAt == null`）的词，避免这些词在两个池里都消失。
+ *   不用未知词频伪造优先级。
  * - “不再出现”（`suppressedAt != null`）的词在复习与新词池中都被过滤。
- * - 交错规则：按剩余池比例做**有种子的加权穿插**，并保证相邻不重复。
+ * - 交错规则：按剩余池比例做**有种子的加权穿插**，并保证不再产生可避免的相邻重复。
  */
 
-import { tryParseInstant } from './clock';
+import { tryParseInstant, zonedDayNumber } from './clock';
 import type { LearningState, ReviewPlan } from './models';
-import { MS_PER_DAY } from './models';
+import { normalizeWeight } from './models';
 import { assertValidReviewPlan } from './scheduler';
 
 /** 每日队列结果。 */
@@ -29,12 +30,13 @@ export interface DailyQueue {
 
 /** 复习候选项（内部使用，携带排序所需的预计算值）。 */
 interface ReviewCandidate {
+  /** 词条 ID。 */
   readonly wordId: string;
   /** 到期时刻毫秒。 */
   readonly dueMilliseconds: number;
   /** 逾期本地日历日数，`>= 0`。 */
   readonly overdueDays: number;
-  /** 权重（非法值按 0 处理会破坏排序语义，因此按传入原值参与比较）。 */
+  /** 已归一化的权重（非法历史值视为初始权重，与调度规则保持一致）。 */
   readonly weight: number;
 }
 
@@ -90,18 +92,6 @@ export function seededShuffle<T>(items: readonly T[], seed: string): T[] {
 }
 
 /**
- * 把本地日历日折算为可比较的整数天序号。
- *
- * @param instant 时刻。
- * @returns 天数序号（本地日历日）。
- */
-function localDayNumber(instant: Date): number {
-  return Math.floor(
-    Date.UTC(instant.getFullYear(), instant.getMonth(), instant.getDate()) / MS_PER_DAY,
-  );
-}
-
-/**
  * 复习池排序比较器：逾期天数降序 → 权重降序 → 到期时间升序 → wordId 升序。
  *
  * @param left 左候选。
@@ -125,12 +115,14 @@ function compareReviewCandidates(left: ReviewCandidate, right: ReviewCandidate):
 }
 
 /**
- * 交替穿插复习与新词，保证相邻元素不重复。
+ * 交替穿插复习与新词，并保证**不产生可避免的相邻重复**。
  *
  * 交错规则（确定性，可测试）：每一步按“剩余新词数 / 剩余总数”计算新词占比 `p`，
- * 从注入种子的 PRNG 取一个 `u ∈ [0,1)`，`u < p` 时取新词、否则取复习词；
- * 某一池耗尽后只取另一池。若本次选择会与上一个元素重复，则改取另一池（另一池可用时）。
- * 因为比较次数只由输入长度决定，所以同一 `(reviews, news, seed)` 永远得到同一结果。
+ * 从注入种子的 PRNG 取一个 `u ∈ [0,1)`，`u < p` 时预取新词、否则预取复习词；
+ * 某一池耗尽后只取另一池。若预取的元素与上一个已输出元素相同，
+ * 则改取另一池（另一池可用且不重复时）；两池都给不出不同元素时，
+ * 丢弃该重复副本（推进指针、不写入结果）。因此当入参数组存在重叠或内部重复时，
+ * 输出仍然不会出现相邻重复，且不会凭空造出新的词。
  *
  * @param reviewWordIds 复习序列（已按优先级排序）。
  * @param newWordIds 新词序列（词库顺序）。
@@ -144,16 +136,9 @@ export function interleaveWordIds(
 ): string[] {
   const reviews = [...reviewWordIds];
   const news = [...newWordIds];
-
-  if (reviews.length === 0) {
-    return news;
-  }
-  if (news.length === 0) {
-    return reviews;
-  }
-
   const random = createSeededRandom(seed);
   const result: string[] = [];
+
   let reviewIndex = 0;
   let newIndex = 0;
 
@@ -167,18 +152,31 @@ export function interleaveWordIds(
     } else if (newRemaining === 0) {
       takeNew = false;
     } else {
-      const newShare = newRemaining / (reviewRemaining + newRemaining);
-      takeNew = random() < newShare;
+      takeNew = random() < newRemaining / (reviewRemaining + newRemaining);
     }
 
-    let wordId = takeNew ? news[newIndex] : reviews[reviewIndex];
-    const previousWordId = result.length > 0 ? result[result.length - 1] : null;
+    const reviewHead = reviewRemaining > 0 ? reviews[reviewIndex] : null;
+    const newHead = newRemaining > 0 ? news[newIndex] : null;
+    const lastEmitted = result.length > 0 ? result[result.length - 1] : null;
 
-    if (previousWordId !== null && wordId === previousWordId) {
-      const otherPoolAvailable = takeNew ? reviewRemaining > 0 : newRemaining > 0;
-      if (otherPoolAvailable) {
+    let candidate = takeNew ? newHead : reviewHead;
+    if (candidate === null) {
+      break;
+    }
+
+    if (candidate === lastEmitted) {
+      const alternative = takeNew ? reviewHead : newHead;
+      if (alternative !== null && alternative !== candidate) {
         takeNew = !takeNew;
-        wordId = takeNew ? news[newIndex] : reviews[reviewIndex];
+        candidate = alternative;
+      } else {
+        // 两池的下一个元素都与上一个输出重复：丢弃该副本，避免相邻重复。
+        if (takeNew) {
+          newIndex += 1;
+        } else {
+          reviewIndex += 1;
+        }
+        continue;
       }
     }
 
@@ -187,7 +185,7 @@ export function interleaveWordIds(
     } else {
       reviewIndex += 1;
     }
-    result.push(wordId);
+    result.push(candidate);
   }
 
   return result;
@@ -196,9 +194,9 @@ export function interleaveWordIds(
 /**
  * 构建某个词库的今日学习队列。
  *
- * @param states 该词库内全部学习状态（可包含未到期与已屏蔽的词）。
+ * @param states 该词库内全部学习状态（可包含未到期、未作答与已屏蔽的词）。
  * @param unseenWordIds 尚未学习过的词，按词库顺序给出。
- * @param plan 当前生效的复习计划。
+ * @param plan 当前生效的复习计划（含 `timeZone`，逾期天数按该时区的本地日历计算）。
  * @param now 注入的当前时刻。
  * @param seed 交错用字符串种子（同一 seed 结果可重放）。
  * @returns 复习序列、新词序列与交错序列。
@@ -218,22 +216,24 @@ export function buildDailyQueue(
   }
 
   const nowMilliseconds = now.getTime();
-  const todayNumber = localDayNumber(now);
+  const todayNumber = zonedDayNumber(now, plan.timeZone);
 
-  // 第一遍：确定被“不再出现”屏蔽的词与已有学习记录的词。
+  // 第一遍：屏蔽词、已作答过的词、已建状态但从未作答的词。
   const suppressedWordIds = new Set<string>();
-  const learnedWordIds = new Set<string>();
+  const reviewedWordIds = new Set<string>();
   for (const state of states) {
-    learnedWordIds.add(state.wordId);
     if (state.suppressedAt !== null) {
       suppressedWordIds.add(state.wordId);
+    }
+    if (state.lastReviewedAt !== null) {
+      reviewedWordIds.add(state.wordId);
     }
   }
 
   // 第二遍：收集复习候选（已屏蔽、未作答过、未到期的一律排除）。
   const candidates: ReviewCandidate[] = [];
   for (const state of states) {
-    if (state.suppressedAt !== null || suppressedWordIds.has(state.wordId)) {
+    if (state.suppressedAt !== null) {
       continue;
     }
     if (state.lastReviewedAt === null) {
@@ -241,7 +241,7 @@ export function buildDailyQueue(
     }
     const due = tryParseInstant(state.dueAt);
     if (due === null) {
-      // 时间戳损坏的行不应“立刻到期”，否则会把脏数据全部塞进今日队列。
+      // 时间戳损坏的行不应“立刻到期”，否则脏数据会全部涌进今日队列。
       continue;
     }
     const dueMilliseconds = due.getTime();
@@ -251,8 +251,8 @@ export function buildDailyQueue(
     candidates.push({
       wordId: state.wordId,
       dueMilliseconds,
-      overdueDays: Math.max(0, todayNumber - localDayNumber(due)),
-      weight: Number.isFinite(state.weight) ? state.weight : 0,
+      overdueDays: Math.max(0, todayNumber - zonedDayNumber(due, plan.timeZone)),
+      weight: normalizeWeight(state.weight),
     });
   }
 
@@ -272,13 +272,33 @@ export function buildDailyQueue(
     reviewWordIds.push(candidate.wordId);
   }
 
+  // 新词池：未学习过的词（保持词库顺序）→ 其次是“已建状态但从未作答”的词（保持传入顺序）。
   const newWordIds: string[] = [];
   const queuedNewWordIds = new Set<string>();
   for (const wordId of unseenWordIds) {
     if (newWordIds.length >= plan.dailyNewLimit) {
       break;
     }
-    if (learnedWordIds.has(wordId) || suppressedWordIds.has(wordId) || queuedNewWordIds.has(wordId)) {
+    if (
+      reviewedWordIds.has(wordId) ||
+      suppressedWordIds.has(wordId) ||
+      queuedNewWordIds.has(wordId)
+    ) {
+      continue;
+    }
+    queuedNewWordIds.add(wordId);
+    newWordIds.push(wordId);
+  }
+  for (const state of states) {
+    if (newWordIds.length >= plan.dailyNewLimit) {
+      break;
+    }
+    const wordId = state.wordId;
+    if (
+      state.lastReviewedAt !== null ||
+      suppressedWordIds.has(wordId) ||
+      queuedNewWordIds.has(wordId)
+    ) {
       continue;
     }
     queuedNewWordIds.add(wordId);

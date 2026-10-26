@@ -219,7 +219,7 @@ React 页面 → Application Services → Core Domain
 | `settings` | `key, value_json, updated_at, device_id, revision` | 每键独立冲突；计划另存生效日期 |
 | `plan_windows` | `id, effective_local_date, start_minute, end_minute, time_zone, updated_at, device_id, revision, deleted_at` | 多学习时段，跨午夜需拆分 |
 | `associations` | `id, word_id, kind, text, asset_uri, origin_url, source_id, generated_by, reviewed_at, created_at, updated_at, deleted_at, device_id, revision` | `kind=MEANING/HOMOPHONE/PICTOGRAPH`；`asset_uri` 为本机缓存地址不同步，`origin_url` 为可核验来源地址；不默认上传二进制 |
-| `frequency_entries` | `word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id` | `rank` 按 frequency 降序；同频次并列共享同一 `rank`，`equal_count` 为该并列组的条数（§8 的 `percentile=(less+0.5*equal)/knownWordCount` 需要它，否则并列值百分位偏高）；一次导入必须满足 `SUM(equal_count) == knownWordCount`；仅允许真实导入；重要性由公开函数计算 |
+| `frequency_entries` | `word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id` | `rank` 按 frequency 降序；同频次并列共享同一 `rank`，`equal_count` 为该并列组的条数（§8 的 `percentile=(less+0.5*equal)/knownWordCount` 需要它，否则并列值百分位偏高）；一次导入必须满足三条：①`COUNT(*) == knownWordCount`（每词一行）；②每行的 `equal_count` 等于**本并列组大小**（并列组 = 共享同一 `rank` 的行）；③同 `rank` 必须同 `frequency`。**注意不能写成 `SUM(equal_count) == knownWordCount`**：组大小为 s 的并列组在按行求和时贡献 s²，只有全无并列时才相等，照字面执行等于禁止一切并列，正好废掉该列的用途；仅允许真实导入；重要性由公开函数计算 |
 | `sync_outbox` | `seq, entity_type, entity_id, operation, payload_json, created_at, attempts, last_error` | 本地事务写入，上传成功后删除 |
 | `sync_state` | `account_id, cursor, last_pull_at, schema_version` | 每账号游标独立 |
 | `sync_conflicts` | `id, entity_type, entity_id, local_json, remote_json, resolution, created_at, resolved_at` | 自动合并也保留可审计记录；大批量异常需提示 |

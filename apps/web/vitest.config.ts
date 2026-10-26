@@ -18,6 +18,12 @@ export default mergeConfig(
       globals: true,
       setupFiles: ['./apps/web/src/test/setup.ts'],
       include: ['apps/web/src/**/*.{test,spec}.{ts,tsx}'],
+      /**
+       * 关闭文件系统模块缓存：web / core / data 三个 project 共享工作区根的
+       * `node_modules/.vitest-cache`，各自 `root` 不同会互相失效，导致每次启动都尝试
+       * 清空该目录（在某些环境会触发批量删除保护而直接失败）。测试量很小，关掉更稳。
+       */
+      fsModuleCache: false,
     },
   }),
 );

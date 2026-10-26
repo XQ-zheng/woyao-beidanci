@@ -1,0 +1,28 @@
+{
+  "name": "@woyao/data",
+  "version": "0.1.0",
+  "private": true,
+  "description": "我要背单词的本地优先数据层（SQLite 迁移、仓储与事务）",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "@woyao/core": "*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0"
+  }
+}

@@ -73,7 +73,7 @@ git commit -m "chore: scaffold web workspace and theme"
   - `export type Recognition = 'KNOWN' | 'UNKNOWN'`
   - `export type TrainingMode = 'EN_TO_ZH' | 'ZH_TO_EN' | 'MIXED'`
   - `export interface LearningState { userWordId: string; deckId: string; wordId: string; stage: number; dueAt: string; lastReviewedAt: string | null; correctCount: number; wrongCount: number; streakCorrect: number; weight: number; suppressedAt: string | null }`
-  - `export interface ReviewPlan { intervalsDays: number[]; dailyNewLimit: number; dailyReviewLimit: number }`
+  - `export interface ReviewPlan { intervalsDays: number[]; dailyNewLimit: number; dailyReviewLimit: number; timeZone: string }`
   - `export interface AnswerInput { isCorrect: boolean; recognition: Recognition; mode: TrainingMode; answeredAt: string }`
   - `export function nextLearningState(state: LearningState, answer: AnswerInput, plan: ReviewPlan, now: Date): LearningState`
   - `export function buildDailyQueue(states: LearningState[], unseenWordIds: string[], plan: ReviewPlan, now: Date, seed: string): { reviewWordIds: string[]; newWordIds: string[]; interleavedWordIds: string[] }`
@@ -117,9 +117,9 @@ git commit -m "feat(core): add learning state scheduler and daily queue"
   - `export interface WordWithSenses { wordId: string; lemma: string; pos: string; senses: string[] }`
   - `export function generateDistractors(target: WordWithSenses, candidates: WordWithSenses[], mode: TrainingMode, seed: string): string[]`
   - `export interface AssessmentEvent { wordId: string; isCorrect: boolean; recognition: Recognition; answeredAt: string; dueAt?: string }`
-  - `export interface AssessmentResult { score: number; level: 'STABLE' | 'SOLID' | 'BUILDING' | 'NEEDS_WORK' | 'INSUFFICIENT_SAMPLE'; coverage: number; confidence: number; distinctWords: number; validAnswers: number; suggestions: string[] }`
+  - `export interface AssessmentResult { score: number; level: 'STABLE' | 'SOLID' | 'BUILDING' | 'NEEDS_WORK' | 'INSUFFICIENT_SAMPLE'; coverage: number; confidence: number; distinctWords: number; validAnswers: number; suggestions: string[]; algorithmVersion: string; generatedAt: string; windowStart: string; windowEnd: string }`
   - `export function evaluateAssessment(events: AssessmentEvent[], deckSize: number, now: Date): AssessmentResult`
-  - `export interface FrequencyEntry { wordId: string; frequency: number; rank?: number; corpusVersion: string; sourceId: string }`
+  - `export interface FrequencyEntry { wordId: string; frequency: number; rank?: number; equalCount?: number; corpusVersion: string; sourceId: string }`
   - `export function classifyFrequencyImportance(entry: FrequencyEntry | null, knownWordCount: number): 'HIGH' | 'MEDIUM' | 'BASIC' | 'UNKNOWN'`
 - Consumes: `LearningState`, `TrainingMode`, `Recognition` from Task 2.
 
@@ -501,6 +501,10 @@ git commit -m "chore(release): add V1.0 packaging, icon, README, and release wor
 ```
 
 ---
+
+## Contract Updates
+
+- D-01 (approved during Task 3): `ReviewPlan` requires an IANA `timeZone`; `AssessmentResult` includes required `algorithmVersion`, `generatedAt`, `windowStart`, `windowEnd`; `FrequencyEntry` supports `equalCount` for tied frequency ranks. Task 4/5/6 must use this shape, not the earlier 7-field assessment or 3-field ReviewPlan.
 
 ## Execution Notes
 

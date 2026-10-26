@@ -462,7 +462,9 @@ export function evaluateAssessment(
       message: '到期复习完成度偏低：建议减少每日新词，先清理逾期复习。',
     });
   }
-  if (coverage < 0.3) {
+  if (components.validAnswers > 0 && coverage < 0.3) {
+    // 零作答时不算“覆盖偏低”：没有样本就没有短板，否则首屏会出现
+    // “首要短板：词库覆盖偏低（0%）”这种把「还没开始」说成「做得差」的误导（复审 U1）。
     shortfalls.push({
       gap: 1 - coverage,
       message: `词库覆盖偏低（${formatPercent(coverage)}）：建议适当增加新词，扩大已掌握范围。`,

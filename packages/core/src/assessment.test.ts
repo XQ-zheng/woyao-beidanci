@@ -77,6 +77,16 @@ describe('evaluateAssessment：样本门槛', () => {
     expect(result.suggestions.join(' ')).toContain('复习样本不足');
   });
 
+  it('零作答时不输出任何“短板”（没有样本就没有短板）', () => {
+    const result = evaluateAssessment([], 100, NOW);
+
+    // 复审 U1：曾经会输出“首要短板：词库覆盖偏低（0%）”，把“还没开始”说成“做得差”。
+    expect(result.suggestions.join(' ')).not.toContain('词库覆盖偏低');
+    expect(result.suggestions.some((suggestion) => suggestion.startsWith('首要短板：'))).toBe(false);
+    expect(result.suggestions.some((suggestion) => suggestion.startsWith('次要短板：'))).toBe(false);
+    expect(result.suggestions).toHaveLength(2);
+  });
+
   it('不同词数不足 30 时不评等级', () => {
     const events = buildSamples(MIN_DISTINCT_WORDS - 1, 3);
 
@@ -359,6 +369,8 @@ describe('评估结果的可追溯元信息（设计 §9）', () => {
     expect(result.generatedAt).toBe(NOW.toISOString());
     expect(result.windowStart).toBe(new Date(NOW.getTime() - 90 * MS_PER_DAY).toISOString());
     expect(result.windowEnd).toBe(NOW.toISOString());
+    // 故意用“精确字段集合”而不是“包含”：`AssessmentResult` 是对外契约，
+    // 任何字段的增删都应让这条用例失败并触发一次口径确认（复审 T1 讨论后的保留选择）。
     expect(Object.keys(result).sort()).toEqual([
       'algorithmVersion',
       'confidence',

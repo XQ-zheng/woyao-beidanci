@@ -254,7 +254,7 @@ describe('resolveDistractorMode', () => {
     );
   });
 
-  it('区分大小写/不同 seed 会改变方向分布，但不是恒定同一方向', () => {
+  it('不同 seed 会改变方向分布，但不是恒定同一方向', () => {
     const modes = new Set(
       Array.from({ length: 8 }, (_unused, index) =>
         resolveDistractorMode('MIXED', 'another-session', `word-${index}`),

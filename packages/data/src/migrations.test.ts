@@ -37,6 +37,34 @@ function indexNamesOf(db: SqliteDatabase): string[] {
   return rows.map((row) => row.name);
 }
 
+/** `better-sqlite3` 约束错误的 `code` 取值（比正则匹配 message 稳定得多）。 */
+type SqliteConstraintCode =
+  | 'SQLITE_CONSTRAINT_UNIQUE'
+  | 'SQLITE_CONSTRAINT_CHECK'
+  | 'SQLITE_CONSTRAINT_FOREIGNKEY'
+  | 'SQLITE_CONSTRAINT_NOTNULL';
+
+/**
+ * 断言某个写操作被**指定的**数据库约束拦下。
+ *
+ * 为什么不用 `toThrow(/CHECK/i)`：message 文本随 SQLite 版本/语言环境变，
+ * 而且 `CHECK` 子串对 `FOREIGN KEY`、`NOT NULL` 的失败也可能偶然命中，
+ * 于是“约束没生效”和“约束生效了但错了”分不开。`code` 是稳定且互斥的。
+ *
+ * @param run 待执行并应失败的写操作。
+ * @param expectedCode 期望的约束错误码。
+ */
+function expectSqliteConstraint(run: () => void, expectedCode: SqliteConstraintCode): void {
+  try {
+    run();
+  } catch (error) {
+    const sqliteError = error as { code?: string; message?: string };
+    expect(sqliteError.code).toBe(expectedCode);
+    return;
+  }
+  throw new Error(`期望被 ${expectedCode} 拦下，但写操作成功了（约束没生效）`);
+}
+
 afterEach(() => {
   while (openDatabases.length > 0) {
     const db = openDatabases.pop();
@@ -160,7 +188,7 @@ describe('migrate：建表与幂等', () => {
     );
 
     insert.run('w1', 'LOCAL', 'Abandon', 'abandon');
-    expect(() => insert.run('w2', 'LOCAL', 'abandon', 'abandon')).toThrow(/UNIQUE/i);
+    expectSqliteConstraint(() => insert.run('w2', 'LOCAL', 'abandon', 'abandon'), 'SQLITE_CONSTRAINT_UNIQUE');
     // 不同 owner_scope 不冲突（账号隔离）。
     expect(() => insert.run('w3', 'acct:u1', 'abandon', 'abandon')).not.toThrow();
 
@@ -171,27 +199,31 @@ describe('migrate：建表与幂等', () => {
   it('normalized_lemma 必须是已标准化形式（CHECK 兜住脏数据）', () => {
     const db = createMigratedDatabase();
 
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO words (id, owner_scope, lemma, normalized_lemma, created_at, updated_at)
-           VALUES ('w9', 'LOCAL', 'Abandon', ' Abandon ', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
-        )
-        .run(),
-    ).toThrow(/CHECK/i);
+    expectSqliteConstraint(
+      () =>
+        db
+          .prepare(
+            `INSERT INTO words (id, owner_scope, lemma, normalized_lemma, created_at, updated_at)
+             VALUES ('w9', 'LOCAL', 'Abandon', ' Abandon ', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+          )
+          .run(),
+      'SQLITE_CONSTRAINT_CHECK',
+    );
   });
 
   it('外键默认开启：义项不能挂在不存在的词上', () => {
     const db = createMigratedDatabase();
 
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO word_senses (id, word_id, sense_no, created_at, updated_at)
-           VALUES ('s1', 'missing-word', 1, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
-        )
-        .run(),
-    ).toThrow(/FOREIGN KEY/i);
+    expectSqliteConstraint(
+      () =>
+        db
+          .prepare(
+            `INSERT INTO word_senses (id, word_id, sense_no, created_at, updated_at)
+             VALUES ('s1', 'missing-word', 1, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+          )
+          .run(),
+      'SQLITE_CONSTRAINT_FOREIGNKEY',
+    );
   });
 
   it('learning_state 的 stage/weight 有 CHECK，符合 core 的取值域', () => {
@@ -211,9 +243,9 @@ describe('migrate：建表与幂等', () => {
     );
 
     expect(() => insertState.run('u1', -1, 1)).not.toThrow();
-    expect(() => insertState.run('u2', -2, 1)).toThrow(/CHECK/i);
-    expect(() => insertState.run('u3', 0, 0.1)).toThrow(/CHECK/i);
-    expect(() => insertState.run('u4', 0, 4.5)).toThrow(/CHECK/i);
+    expectSqliteConstraint(() => insertState.run('u2', -2, 1), 'SQLITE_CONSTRAINT_CHECK');
+    expectSqliteConstraint(() => insertState.run('u3', 0, 0.1), 'SQLITE_CONSTRAINT_CHECK');
+    expectSqliteConstraint(() => insertState.run('u4', 0, 4.5), 'SQLITE_CONSTRAINT_CHECK');
   });
 
   it('frequency_entries 的 equal_count 是 NOT NULL DEFAULT 1 且 >= 1，total_tokens 允许 NULL', () => {
@@ -240,23 +272,27 @@ describe('migrate：建表与幂等', () => {
     expect(rows.map((row) => row.equal_count)).toEqual([1, 1]);
     expect(rows.map((row) => row.total_tokens)).toEqual([null, 1000]);
 
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO frequency_entries (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
-           VALUES ('w1', 'ALL', 'v1', 10, 1000, 5, 0, 'src1')`,
-        )
-        .run(),
-    ).toThrow(/CHECK/i);
+    expectSqliteConstraint(
+      () =>
+        db
+          .prepare(
+            `INSERT INTO frequency_entries (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
+             VALUES ('w1', 'ALL', 'v1', 10, 1000, 5, 0, 'src1')`,
+          )
+          .run(),
+      'SQLITE_CONSTRAINT_CHECK',
+    );
     // 列上不允许 NULL：SUM() 会跳过 NULL，任何基于 equal_count 的校验都会因此失效。
-    expect(() =>
-      db
-        .prepare(
-          `INSERT INTO frequency_entries (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
-           VALUES ('w1', 'GRE', 'v1', 10, 1000, 5, NULL, 'src1')`,
-        )
-        .run(),
-    ).toThrow(/NOT NULL/i);
+    expectSqliteConstraint(
+      () =>
+        db
+          .prepare(
+            `INSERT INTO frequency_entries (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
+             VALUES ('w1', 'GRE', 'v1', 10, 1000, 5, NULL, 'src1')`,
+          )
+          .run(),
+      'SQLITE_CONSTRAINT_NOTNULL',
+    );
 
     expect(createSqlOf(db, 'frequency_entries')).toMatch(
       /equal_count\s+INTEGER\s+NOT NULL\s+DEFAULT\s+1\s+CHECK\s*\(\s*equal_count\s*>=\s*1\s*\)/i,
@@ -291,7 +327,17 @@ describe('openDatabase / closeDatabase / migrate：错误路径', () => {
     // 预先造一张同名但缺列的表，让 001 的 CREATE INDEX 撞车（IF NOT EXISTS 不会救场）。
     db.exec('CREATE TABLE learning_state (user_word_id TEXT PRIMARY KEY)');
 
-    expect(() => migrate(db)).toThrow(MigrationError);
+    // 断言错误具体指向**哪一个**迁移版本，而不是"抛了个错"。
+    try {
+      migrate(db);
+      expect.unreachable('应当抛出 MigrationError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(MigrationError);
+      if (error instanceof MigrationError) {
+        expect(error.code).toBe('MIGRATION_FAILED');
+        expect(error.message).toContain('001');
+      }
+    }
 
     // 001 整体回滚：schema_migrations 里不应出现 001，其他表也没被建出来。
     expect(listAppliedMigrations(db)).toEqual([]);

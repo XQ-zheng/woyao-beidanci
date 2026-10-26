@@ -19,6 +19,28 @@ function createDatabase(): SqliteDatabase {
 /** 固定时刻，避免断言依赖真实时钟。 */
 const NOW = new Date('2025-01-01T00:00:00.000Z');
 
+/**
+ * 断言抛出的入参错误指向**指定字段**。
+ *
+ * 只断言错误类不够：`InvalidRepositoryInputError` 覆盖了十几个字段的校验，
+ * 任何一条校验“顺手”接住都会让用例保持绿色。这里把 `field` 也钉死。
+ *
+ * @param run 待执行并应失败的调用。
+ * @param expectedField 期望的出错字段名。
+ */
+function expectInputError(run: () => void, expectedField: string): void {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(InvalidRepositoryInputError);
+    if (error instanceof InvalidRepositoryInputError) {
+      expect(error.field).toBe(expectedField);
+    }
+    return;
+  }
+  throw new Error(`期望字段 ${expectedField} 的入参错误，但调用成功了`);
+}
+
 afterEach(() => {
   while (openDatabases.length > 0) {
     const db = openDatabases.pop();
@@ -83,7 +105,7 @@ describe('sync_outbox', () => {
 
     expect(repo.listOutbox(2).map((record) => record.entityId)).toEqual(['w-1', 'w-2']);
     expect(repo.listOutbox()).toHaveLength(5);
-    expect(() => repo.listOutbox(0)).toThrow(InvalidRepositoryInputError);
+    expectInputError(() => repo.listOutbox(0), 'limit');
   });
 
   it('deleteOutbox 只删除给定 seq（上传成功后的精确确认）', () => {
@@ -95,7 +117,7 @@ describe('sync_outbox', () => {
     repo.deleteOutbox([first]);
 
     expect(repo.listOutbox().map((record) => record.seq)).toEqual([second]);
-    expect(() => repo.deleteOutbox([0])).toThrow(InvalidRepositoryInputError);
+    expectInputError(() => repo.deleteOutbox([0]), 'seqs');
     expect(() => repo.deleteOutbox([])).not.toThrow();
   });
 
@@ -123,18 +145,21 @@ describe('sync_outbox', () => {
     const db = createDatabase();
     const repo = createSyncRepository(db);
 
-    expect(() =>
-      repo.enqueueOutbox({
-        entityType: 'WORD',
-        entityId: 'w-1',
-        operation: 'PATCH' as unknown as 'UPSERT',
-        payload: {},
-      }),
-    ).toThrow(InvalidRepositoryInputError);
-    expect(() =>
-      repo.enqueueOutbox({ entityType: 'WORD', entityId: ' ', operation: 'UPSERT', payload: {} }),
-    ).toThrow(InvalidRepositoryInputError);
-    expect(() => repo.markSynced('')).toThrow(InvalidRepositoryInputError);
+    expectInputError(
+      () =>
+        repo.enqueueOutbox({
+          entityType: 'WORD',
+          entityId: 'w-1',
+          operation: 'PATCH' as unknown as 'UPSERT',
+          payload: {},
+        }),
+      'operation',
+    );
+    expectInputError(
+      () => repo.enqueueOutbox({ entityType: 'WORD', entityId: ' ', operation: 'UPSERT', payload: {} }),
+      'entityId',
+    );
+    expectInputError(() => repo.markSynced(''), 'entityId');
   });
 });
 
@@ -190,10 +215,11 @@ describe('sync_state：每账号独立游标', () => {
   it('schemaVersion 必须是 >=1 的整数', () => {
     const repo = createSyncRepository(createDatabase());
 
-    expect(() =>
-      repo.setSyncState({ accountId: 'u1', cursor: null, lastPullAt: null, schemaVersion: 0 }),
-    ).toThrow(InvalidRepositoryInputError);
-    expect(() => repo.getSyncState('')).toThrow(InvalidRepositoryInputError);
+    expectInputError(
+      () => repo.setSyncState({ accountId: 'u1', cursor: null, lastPullAt: null, schemaVersion: 0 }),
+      'schemaVersion',
+    );
+    expectInputError(() => repo.getSyncState(''), 'accountId');
   });
 });
 
@@ -238,14 +264,12 @@ describe('sync_conflicts：冲突留档不丢数据', () => {
     expect(row.resolution).toBe('KEEP_LOCAL');
     expect(row.resolved_at).toBe(NOW.toISOString());
 
-    expect(() => repo.resolveConflict(id, 'KEEP_REMOTE', NOW)).toThrow(InvalidRepositoryInputError);
+    expectInputError(() => repo.resolveConflict(id, 'KEEP_REMOTE', NOW), 'id');
   });
 
   it('不存在的冲突 id 不会被静默当成成功', () => {
     const repo = createSyncRepository(createDatabase());
 
-    expect(() => repo.resolveConflict('missing', 'KEEP_LOCAL', NOW)).toThrow(
-      InvalidRepositoryInputError,
-    );
+    expectInputError(() => repo.resolveConflict('missing', 'KEEP_LOCAL', NOW), 'id');
   });
 });

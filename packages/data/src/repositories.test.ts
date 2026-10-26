@@ -118,6 +118,36 @@ function countRows(db: SqliteDatabase, table: string): number {
   return row.n;
 }
 
+/**
+ * 断言抛出的是**指定 kind** 的词频失配，并返回错误对象供继续断言消息。
+ *
+ * 只断言消息子串是不够的：`equal_count mismatch` 这条消息同时由「并列组写了默认值 1」
+ * 与「equalCount 写成了别的数」两处抛出，兜底分支会替前面那条守卫“接住”变异，
+ * 于是用例看起来绿、实际没守住任何东西（本轮反向验证就抓到过这种假绿）。
+ * 这里强制断言 `kind` 与 `code` 两个机器可读字段。
+ *
+ * @param run 待执行并应失败的写入。
+ * @param expectedKind 期望的失配类型。
+ * @returns 抛出的错误对象。
+ */
+function expectFrequencyMismatch(
+  run: () => void,
+  expectedKind: FrequencyCorpusMismatchError['kind'],
+): FrequencyCorpusMismatchError {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
+    if (!(error instanceof FrequencyCorpusMismatchError)) {
+      throw error;
+    }
+    expect(error.kind).toBe(expectedKind);
+    expect(error.code).toBe(`FREQUENCY_${expectedKind}`);
+    return error;
+  }
+  throw new Error(`期望抛出 ${expectedKind}，但写入成功了（校验没生效）`);
+}
+
 afterEach(() => {
   while (openDatabases.length > 0) {
     const db = openDatabases.pop();
@@ -383,9 +413,8 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
       ],
     });
 
-    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(
-      /rank gap at frequency=90 expected=2 actual=3/u,
-    );
+    const error = expectFrequencyMismatch(() => repo.writeFrequencyCorpus(broken), 'RANK_GAP');
+    expect(error.message).toMatch(/rank gap at frequency=90 expected=2 actual=3/u);
     expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2')).toHaveLength(3);
     expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2').map((entry) => entry.rank)).toEqual([1, 2, 2]);
   });
@@ -403,20 +432,13 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
       ],
     });
 
-    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(
-      /equal_count mismatch at frequency=90 expected=2 actual=1/u,
-    );
-    // 「并列组写了默认值 1」必须与「equalCount 写错成别的数」区分开：
+    // 「并列组写了默认值 1」必须与「equalCount 写成别的数」区分开：
     // 前者是导入脚本漏算并列，后者是数据本身有误，处置方式不同。
-    try {
-      repo.writeFrequencyCorpus(broken);
-      expect.unreachable('应当抛出 FrequencyCorpusMismatchError');
-    } catch (error) {
-      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
-      if (error instanceof FrequencyCorpusMismatchError) {
-        expect(error.kind).toBe('TIE_GROUP_DEFAULT');
-      }
-    }
+    const error = expectFrequencyMismatch(
+      () => repo.writeFrequencyCorpus(broken),
+      'TIE_GROUP_DEFAULT',
+    );
+    expect(error.message).toMatch(/equal_count mismatch at frequency=90 expected=2 actual=1/u);
     // 整份语料整体回滚：一行都没落地。
     expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2')).toEqual([]);
   });
@@ -434,15 +456,11 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
       ],
     });
 
-    try {
-      repo.writeFrequencyCorpus(broken);
-      expect.unreachable('应当抛出 FrequencyCorpusMismatchError');
-    } catch (error) {
-      expect(error).toBeInstanceOf(FrequencyCorpusMismatchError);
-      if (error instanceof FrequencyCorpusMismatchError) {
-        expect(error.kind).toBe('EQUAL_COUNT_MISMATCH');
-      }
-    }
+    const error = expectFrequencyMismatch(
+      () => repo.writeFrequencyCorpus(broken),
+      'EQUAL_COUNT_MISMATCH',
+    );
+    expect(error.message).toMatch(/equal_count mismatch at frequency=90 expected=2 actual=3/u);
   });
 
   it('覆盖词数与 knownWordCount 不符抛 TOTAL_MISMATCH，旧语料保持不变', () => {
@@ -453,9 +471,11 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
 
     const broken = makeCorpus({ knownWordCount: 5 });
 
-    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(
-      /knownWordCount mismatch expected=5 actual=3/u,
+    const error = expectFrequencyMismatch(
+      () => repo.writeFrequencyCorpus(broken),
+      'TOTAL_MISMATCH',
     );
+    expect(error.message).toMatch(/knownWordCount mismatch expected=5 actual=3/u);
     expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2').map((entry) => entry.wordId)).toEqual([
       'w-abandon',
       'w-ability',
@@ -476,7 +496,58 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
       ],
     });
 
-    expect(() => repo.writeFrequencyCorpus(broken)).toThrow(FrequencyCorpusMismatchError);
+    const error = expectFrequencyMismatch(
+      () => repo.writeFrequencyCorpus(broken),
+      'DUPLICATE_WORD',
+    );
+    expect(error.message).toContain('w-abandon');
+  });
+
+  it('四类失配各报各的 kind（kind 有区分度，不是同一分支的别名）', () => {
+    const db = createDatabase();
+    seedWords(db);
+    const repo = createWordRepository(db);
+
+    const rankGap = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 3, equalCount: 1 },
+        { wordId: 'w-absent', frequency: 80, rank: 4, equalCount: 1 },
+      ],
+    });
+    const tieDefault = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 1 },
+        { wordId: 'w-absent', frequency: 90, rank: 2, equalCount: 1 },
+      ],
+    });
+    const equalCountWrong = makeCorpus({
+      entries: [
+        { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+        { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 3 },
+        { wordId: 'w-absent', frequency: 90, rank: 2, equalCount: 3 },
+      ],
+    });
+    const totalWrong = makeCorpus({ knownWordCount: 9 });
+
+    const kinds = [rankGap, tieDefault, equalCountWrong, totalWrong].map((corpus) => {
+      try {
+        repo.writeFrequencyCorpus(corpus);
+        return 'NO_ERROR';
+      } catch (error) {
+        return error instanceof FrequencyCorpusMismatchError ? error.kind : 'WRONG_TYPE';
+      }
+    });
+
+    expect(kinds).toEqual([
+      'RANK_GAP',
+      'TIE_GROUP_DEFAULT',
+      'EQUAL_COUNT_MISMATCH',
+      'TOTAL_MISMATCH',
+    ]);
+    // 四份错误语料一行都不该落地（顺序无关，这里断言总量）。
+    expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2')).toEqual([]);
   });
 
   it('totalTokens 可为 null（来源没给出统计口径时不写 0 冒充）', () => {
@@ -554,12 +625,22 @@ describe('appendEventAndUpdateState：幂等与原子性', () => {
     seedDeckAndWords(db);
     const learning = createLearningRepository(db);
 
-    expect(() =>
+    try {
       learning.appendEventAndUpdateState(
         makeEvent({ userWordId: 'deck-1:w-2' }),
         makeState({ userWordId: 'deck-1:w-1' }),
-      ),
-    ).toThrow(RepositoryInvariantError);
+      );
+      expect.unreachable('应当抛出 RepositoryInvariantError');
+    } catch (error) {
+      // 断到「哪条不变量、双方各是谁」：只断言错误类会让“串错主键”和“别的不变量”混在一起。
+      expect(error).toBeInstanceOf(RepositoryInvariantError);
+      if (error instanceof RepositoryInvariantError) {
+        expect(error.code).toBe('REPOSITORY_INVARIANT_VIOLATION');
+        expect(error.invariant).toBe('event.userWordId === state.userWordId');
+        expect(error.detail).toContain('deck-1:w-2');
+        expect(error.detail).toContain('deck-1:w-1');
+      }
+    }
 
     expect(countRows(db, 'learning_events')).toBe(0);
     expect(countRows(db, 'learning_state')).toBe(0);
@@ -571,12 +652,19 @@ describe('appendEventAndUpdateState：幂等与原子性', () => {
     seedDeckAndWords(db);
     const learning = createLearningRepository(db);
 
-    expect(() =>
+    try {
       learning.appendEventAndUpdateState(
         makeEvent({ syncedAt: '2025-01-05T02:00:00.000Z' }),
         makeState(),
-      ),
-    ).toThrow(InvalidRepositoryInputError);
+      );
+      expect.unreachable('应当抛出 InvalidRepositoryInputError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidRepositoryInputError);
+      if (error instanceof InvalidRepositoryInputError) {
+        // 断言是**哪个字段**出的问题，避免这条用例被任何一条入参校验"顺手"接住。
+        expect(error.field).toBe('syncedAt');
+      }
+    }
   });
 
   it('makeUserWordId 拼出稳定的 ${deckId}:${wordId}', () => {

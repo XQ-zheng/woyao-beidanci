@@ -135,7 +135,8 @@ describe('associationService：enrichOnline', () => {
     await service.addAssociation({ wordId: 'w-1', kind: 'MEANING', text: '已有联想' });
 
     const first = await service.enrichOnline({ wordId: 'w-1', kind: 'MEANING' });
-    expect(first.map((item) => item.text)).toEqual(['已有联想', '新联想']);
+    // 两条联想的 created_at 相同，排序会落到 UUID 决胜——断言只看集合，不看顺序。
+    expect([...first.map((item) => item.text)].sort()).toEqual(['已有联想', '新联想']);
     expect(first.find((item) => item.text === '新联想')?.generatedBy).toBe('ONLINE');
     expect(first.find((item) => item.text === '新联想')?.originUrl).toBe('https://example.com/new');
 
@@ -145,7 +146,7 @@ describe('associationService：enrichOnline', () => {
     expect(count.n).toBe(2);
 
     const second = await service.enrichOnline({ wordId: 'w-1', kind: 'MEANING' });
-    expect(second.map((item) => item.text)).toEqual(['已有联想', '新联想']);
+    expect([...second.map((item) => item.text)].sort()).toEqual(['已有联想', '新联想']);
     const after = harness.db.prepare('SELECT COUNT(*) AS n FROM associations').get() as {
       n: number;
     };

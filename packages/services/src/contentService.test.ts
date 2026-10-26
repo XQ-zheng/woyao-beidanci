@@ -58,6 +58,15 @@ function seedBareWord(harness: ServiceTestHarness): void {
   });
 }
 
+/** 把某条缓存改成“已过期”（`now` 固定为 2025-03-01，用 2025-01-01 表示早已过期）。 */
+function expireCache(harness: ServiceTestHarness, cacheKey: string): void {
+  const entry = harness.sync.contentCache.get(cacheKey);
+  if (entry === null) {
+    throw new Error(`缓存不存在，无法置过期：${cacheKey}`);
+  }
+  harness.sync.contentCache.set({ ...entry, expiresAt: '2025-01-01T00:00:00.000Z' });
+}
+
 describe('contentService：getWordContent', () => {
   it('本地有义项 → source=LOCAL，且不触发在线', async () => {
     let onlineCalls = 0;
@@ -133,6 +142,33 @@ describe('contentService：getWordContent', () => {
     expect(onlineCalls).toBe(1);
   });
 
+  it('过期缓存 + 离线 → 回退旧缓存（source=ONLINE 取旧义项，不是 NONE）', async () => {
+    let online = true;
+    const { harness, service } = makeContent({
+      network: { isOnline: (): boolean => online },
+      http: {
+        getJson: async () => ({ status: 200, data: DICTIONARY_RESPONSE }),
+        getText: async () => ({ status: 404, body: '' }),
+      },
+    });
+    seedBareWord(harness);
+
+    // 第一次在线命中，落缓存（新鲜）。
+    const fresh = await service.getWordContent({ wordId: 'w-1' });
+    expect(fresh.source).toBe('ONLINE');
+    expect(fresh.senses.map((sense) => sense.simpleZh)).toEqual(['to leave someone']);
+
+    // 置缓存过期 + 断网。
+    expireCache(harness, 'content:word:abandon');
+    online = false;
+
+    const stale = await service.getWordContent({ wordId: 'w-1' });
+
+    // 关键：过期缓存仍可用，回退旧值而不是 NONE/空义项。
+    expect(stale.source).toBe('ONLINE');
+    expect(stale.senses.map((sense) => sense.simpleZh)).toEqual(['to leave someone']);
+  });
+
   it('词条不存在 → NOT_FOUND', async () => {
     const { service } = makeContent();
 
@@ -167,5 +203,28 @@ describe('contentService：getPronunciation', () => {
 
     expect(result.url).toBe('https://example.com/abandon-uk.mp3');
     expect(harness.sync.contentCache.get('audio:abandon:uk')).not.toBeNull();
+  });
+
+  it('过期音频缓存 + 离线 → 回退旧 url（不是 null）', async () => {
+    let online = true;
+    const { harness, service } = makeContent({
+      network: { isOnline: (): boolean => online },
+      http: {
+        getJson: async () => ({ status: 200, data: DICTIONARY_RESPONSE }),
+        getText: async () => ({ status: 404, body: '' }),
+      },
+    });
+    seedBareWord(harness);
+
+    const fresh = await service.getPronunciation({ wordId: 'w-1', accent: 'uk' });
+    expect(fresh.url).toBe('https://example.com/abandon-uk.mp3');
+
+    expireCache(harness, 'audio:abandon:uk');
+    online = false;
+
+    const stale = await service.getPronunciation({ wordId: 'w-1', accent: 'uk' });
+
+    expect(stale.url).toBe('https://example.com/abandon-uk.mp3');
+    expect(stale.phoneticText).toBe('/əˈbændən/');
   });
 });

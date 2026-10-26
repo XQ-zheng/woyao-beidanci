@@ -105,6 +105,39 @@ describe('onlineService：lookupDictionary', () => {
     expect(await service.lookupDictionary({ lemma: 'abandon' })).toBeNull();
   });
 
+  it('definition 换成别的字段名 → null（锁定字段名，上游改名就降级）', async () => {
+    const { service } = makeOnline({
+      http: {
+        getJson: async () => ({
+          status: 200,
+          data: [
+            {
+              word: 'abandon',
+              meanings: [{ partOfSpeech: 'verb', definitions: [{ def: 'to leave someone' }] }],
+            },
+          ],
+        }),
+        getText: async () => ({ status: 404, body: '' }),
+      },
+    });
+
+    expect(await service.lookupDictionary({ lemma: 'abandon' })).toBeNull();
+  });
+
+  it('meanings 不是数组 → null', async () => {
+    const { service } = makeOnline({
+      http: {
+        getJson: async () => ({
+          status: 200,
+          data: [{ word: 'abandon', meanings: 'verb' }],
+        }),
+        getText: async () => ({ status: 404, body: '' }),
+      },
+    });
+
+    expect(await service.lookupDictionary({ lemma: 'abandon' })).toBeNull();
+  });
+
   it('isOnline()===false 直接返回 null，且不发起请求', async () => {
     let called = 0;
     const { service } = makeOnline({

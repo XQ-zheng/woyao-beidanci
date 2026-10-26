@@ -1,0 +1,82 @@
+classDiagram
+class Word {
+  +string id
+  +string lemma
+  +string phoneticUk
+  +string phoneticUs
+}
+class WordSense {
+  +string id
+  +string wordId
+  +string simpleZh
+  +string detailedZh
+  +string sourceId
+}
+class LearningState {
+  +string userWordId
+  +number stage
+  +string dueAt
+  +number wrongCount
+  +number weight
+  +string? suppressedAt
+}
+class LearningEvent {
+  +string eventId
+  +string userWordId
+  +TrainingMode mode
+  +boolean isCorrect
+  +Recognition recognition
+  +string answeredAt
+}
+class StudyService {
+  +buildDailyQueue(deckId, now) Queue
+  +submitAnswer(command) AnswerResult
+  +suppress(userWordId) void
+  +restore(userWordId) void
+}
+class Scheduler {
+  +next(state, answer, now) LearningState
+  +dueQueue(states, plan, now) LearningState[]
+}
+class AssessmentService {
+  +evaluate(events, deck, range) Assessment
+}
+class LearningRepository {
+  +appendEventAndUpdateState(event, state) void
+  +getState(userWordId) LearningState
+  +listDue(deckId, now) LearningState[]
+}
+class SyncService {
+  +synchronize() SyncReport
+  +resolveConflict(id, resolution) void
+}
+class CloudGateway {
+  <<interface>>
+  +pull(cursor, limit) PullPage
+  +appendEvents(events) AppendResult
+  +upsertEntities(changes) UpsertResult
+}
+class SecureStore {
+  <<interface>>
+  +get(key) string
+  +set(key, value) void
+  +remove(key) void
+}
+class ExportService {
+  +exportHistory(format, range, destination) ExportReceipt
+  +exportNotebook(format, notebookId, destination) ExportReceipt
+}
+class ContentProvider {
+  <<interface>>
+  +getSenses(word) WordContentResult
+  +getPronunciation(word, accent) AudioResult
+}
+Word "1" --> "many" WordSense
+Word "1" --> "0..1" LearningState
+LearningState "1" --> "many" LearningEvent
+StudyService --> Scheduler
+StudyService --> LearningRepository
+StudyService --> AssessmentService
+SyncService --> LearningRepository
+SyncService --> CloudGateway
+StudyService --> ContentProvider

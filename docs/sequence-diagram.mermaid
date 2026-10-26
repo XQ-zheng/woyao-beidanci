@@ -1,0 +1,30 @@
+sequenceDiagram
+autonumber
+actor U as 用户
+participant UI as StudyPage
+participant S as StudyService
+participant Q as Scheduler
+participant R as LearningRepository
+participant DB as SQLite
+participant Y as SyncService
+participant C as CloudGateway
+U->>UI: 提交答案与认识/不认识
+UI->>S: submitAnswer(command 含 eventId)
+S->>R: getState(userWordId)
+R-->>S: 当前状态
+S->>Q: next(state, answer, now)
+Q-->>S: 新阶段/到期时间/权重
+S->>R: appendEventAndUpdateState(event, state)
+R->>DB: BEGIN; 检查 eventId; 插入事件+更新状态+outbox; COMMIT
+DB-->>R: 持久化成功（重复事件则幂等返回）
+R-->>S: 提交结果
+S-->>UI: 绿色/红色反馈及累计错次
+UI-->>U: 展示结果，可继续学习
+opt 已登录且在线
+  Y->>R: 读取 outbox 与游标
+  Y->>C: appendEvents(同 eventId)
+  C-->>Y: inserted 或 duplicate
+  Y->>C: pull(cursor)
+  C-->>Y: 幂等变更页
+  Y->>R: 去重合并并推进游标
+end

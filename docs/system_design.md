@@ -216,7 +216,7 @@ React 页面 → Application Services → Core Domain
 | `decks` | `id, owner_scope, name, kind, source_id, created_at, updated_at, deleted_at, device_id, revision` | `kind=BUILTIN/CUSTOM/NOTEBOOK` |
 | `deck_words` | `deck_id, word_id, added_at, updated_at, deleted_at, device_id, revision` | 联合主键；收藏即向 NOTEBOOK 添加 |
 | `learning_state` | `user_word_id, deck_id, word_id, stage, due_at, last_reviewed_at, correct_count, wrong_count, streak_correct, last_result, weight, suppressed_at, state_updated_at, device_id, revision` | 每词每词库一条；错词统计不依赖云端重新计算 |
-| `learning_events` | `event_id, user_word_id, deck_id, word_id, session_id, mode, prompt, answer, is_correct, recognition, stage_before, stage_after, answered_at, local_date, time_zone, duration_ms, device_id, synced_at` | `event_id` 主键；追加、不更新学习事实 |
+| `learning_events` | `event_id, user_word_id, deck_id, word_id, session_id, mode, prompt, answer, is_correct, recognition, stage_before, stage_after, due_at, answered_at, local_date, time_zone, duration_ms, device_id, synced_at` | `event_id` 主键；追加、不更新学习事实 |
 | `study_sessions` | `session_id, deck_id, started_at, ended_at, local_date, time_zone, new_count, review_count, active_duration_ms, plan_snapshot_json, device_id, revision` | 完成统计和历史快照 |
 | `settings` | `key, value_json, updated_at, device_id, revision, deleted_at` | 每键独立冲突；计划另存生效日期；`deleted_at` 为软删标记——`remove(key)` 需要可同步的删除，硬 DELETE 会让 `device_id`/`revision` 失去意义，也让另一端无法得知"这个键被删了"（Task 4 实现时补齐，原表遗漏） |
 | `plan_windows` | `id, effective_local_date, start_minute, end_minute, time_zone, updated_at, device_id, revision, deleted_at` | 多学习时段，跨午夜需拆分 |
@@ -414,7 +414,7 @@ interface AssociationProvider {
 ```text
 A = 最近 90 天加权正确率（最近 30 天权重 0.6，其余 0.4）
 R = “认识”次数 / 有效作答次数
-M = 到期复习中，在到期后 48 小时内答对的比例；若无符合样本则取中性值 0.5 并明确标记“复习样本不足”
+M = 到期复习中，在到期后 48 小时内答对的比例；若无符合样本则取中性值 0.5 并明确标记“复习样本不足”。M 依赖 `learning_events.due_at`：作答事件记录“本次作答所履行的那次到期时间”，新词首答（`stage_before=-1`）无到期概念，`due_at` 为 NULL、不计入 M；复习事件写入作答前 `learning_state.due_at`。
 E = exp(-wrongEvents / max(distinctAttemptedWords, 1))
 S = 100 * clamp(0.50*A + 0.15*R + 0.25*M + 0.10*E, 0, 1)
 coverage = 至少答对一次的不同词数 / 当前词库词数

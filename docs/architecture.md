@@ -202,6 +202,8 @@ React 页面 → Application Services → Core Domain
 - 时间戳使用 UTC ISO 8601 毫秒；`local_date` 为 `YYYY-MM-DD`，同时记录 IANA `time_zone`。
 - 可同步实体包含 `updated_at`、`device_id`、`revision`、`deleted_at`；`revision` 为服务端确认版本，本地未同步更改不伪造服务端版本。
 - 所有外部内容通过 `source_id` 关联来源；无来源不显示为“真实词频”。
+- 可同步实体统一带 `created_at`（首次创建时间），仅作本地审计与导出排序依据，不参与冲突裁决；`updated_at` 才是同步比较字段。
+- `learning_events` 额外冗余 `deck_id`、`word_id`（可由 `user_word_id` 反解，但事件表要能在不 JOIN `learning_state` 的前提下按词库/单词汇总，且 `learning_state` 允许被重建时历史仍可读）。
 - SQL 字段使用 snake_case，TS DTO 使用 camelCase，Repository 显式映射。
 
 #### 4.2 本地 SQLite 表
@@ -214,7 +216,7 @@ React 页面 → Application Services → Core Domain
 | `decks` | `id, owner_scope, name, kind, source_id, created_at, updated_at, deleted_at, device_id, revision` | `kind=BUILTIN/CUSTOM/NOTEBOOK` |
 | `deck_words` | `deck_id, word_id, added_at, updated_at, deleted_at, device_id, revision` | 联合主键；收藏即向 NOTEBOOK 添加 |
 | `learning_state` | `user_word_id, deck_id, word_id, stage, due_at, last_reviewed_at, correct_count, wrong_count, streak_correct, last_result, weight, suppressed_at, state_updated_at, device_id, revision` | 每词每词库一条；错词统计不依赖云端重新计算 |
-| `learning_events` | `event_id, user_word_id, session_id, mode, prompt, answer, is_correct, recognition, stage_before, stage_after, answered_at, local_date, time_zone, duration_ms, device_id, synced_at` | `event_id` 主键；追加、不更新学习事实 |
+| `learning_events` | `event_id, user_word_id, deck_id, word_id, session_id, mode, prompt, answer, is_correct, recognition, stage_before, stage_after, answered_at, local_date, time_zone, duration_ms, device_id, synced_at` | `event_id` 主键；追加、不更新学习事实 |
 | `study_sessions` | `session_id, deck_id, started_at, ended_at, local_date, time_zone, new_count, review_count, active_duration_ms, plan_snapshot_json, device_id, revision` | 完成统计和历史快照 |
 | `settings` | `key, value_json, updated_at, device_id, revision, deleted_at` | 每键独立冲突；计划另存生效日期；`deleted_at` 为软删标记——`remove(key)` 需要可同步的删除，硬 DELETE 会让 `device_id`/`revision` 失去意义，也让另一端无法得知"这个键被删了"（Task 4 实现时补齐，原表遗漏） |
 | `plan_windows` | `id, effective_local_date, start_minute, end_minute, time_zone, updated_at, device_id, revision, deleted_at` | 多学习时段，跨午夜需拆分 |

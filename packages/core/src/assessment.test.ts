@@ -129,6 +129,23 @@ describe('evaluateAssessment：得分公式', () => {
     expect(result.suggestions.join(' ')).not.toContain('复习样本不足');
   });
 
+  it('恰好落在 85 分线上时判 STABLE（浮点容差）', () => {
+    // A=1（全对）、R=50/60、M=0.5（无到期复习样本，中性值）、E=1（无错误）
+    // → 100 * (0.5*1 + 0.15*(5/6) + 0.25*0.5 + 0.1*1) = 85
+    const events: AssessmentEvent[] = [];
+    for (let wordIndex = 0; wordIndex < 30; wordIndex += 1) {
+      const recognition: Recognition = wordIndex < 25 ? 'KNOWN' : 'UNKNOWN';
+      events.push(makeEvent(`w-${wordIndex}`, { recognition, isCorrect: true }));
+      events.push(makeEvent(`w-${wordIndex}`, { recognition, isCorrect: true }));
+    }
+
+    const result = evaluateAssessment(events, 100, NOW);
+
+    expect(result.validAnswers).toBe(60);
+    expect(result.score).toBeCloseTo(85, 6);
+    expect(result.level).toBe('STABLE');
+  });
+
   it('A 按 30 天 0.6 / 其余 0.4 加权', () => {
     const events: AssessmentEvent[] = [
       makeEvent('w-1', { ageDays: 5, isCorrect: true }),
@@ -145,6 +162,28 @@ describe('evaluateAssessment：得分公式', () => {
     expect(components.errorPenalty).toBeCloseTo(Math.exp(-1 / 4), 10);
     expect(components.distinctWords).toBe(4);
     expect(components.wrongAnswers).toBe(1);
+  });
+
+  it('只有一个子窗口有样本时按该窗口归一，不把 0 掺进权重', () => {
+    const recentOnly: AssessmentEvent[] = [
+      makeEvent('w-1', { ageDays: 5, isCorrect: true }),
+      makeEvent('w-2', { ageDays: 5, isCorrect: false, recognition: 'UNKNOWN' }),
+    ];
+    const earlierOnly: AssessmentEvent[] = [
+      makeEvent('w-3', { ageDays: 45, isCorrect: true }),
+      makeEvent('w-4', { ageDays: 45, isCorrect: true }),
+      makeEvent('w-5', { ageDays: 45, isCorrect: false, recognition: 'UNKNOWN' }),
+    ];
+
+    const recentComponents = computeAssessmentComponents(recentOnly, NOW);
+    const earlierComponents = computeAssessmentComponents(earlierOnly, NOW);
+
+    // 近 30 天独有样本：0.6*0.5/0.6 = 0.5（若按 0.6*0.5 + 0.4*0 会错成 0.3）
+    expect(recentComponents.accuracy).toBeCloseTo(0.5, 10);
+    expect(recentComponents.recentAnswers).toBe(2);
+    // 只有较早窗口样本：0.4*(2/3)/0.4 = 2/3（若掺 0 会错成 0.2667）
+    expect(earlierComponents.accuracy).toBeCloseTo(2 / 3, 10);
+    expect(earlierComponents.recentAnswers).toBe(0);
   });
 
   it('错误惩罚 E 随“错次数 / 不同词数”指数衰减', () => {
@@ -204,6 +243,30 @@ describe('评估：M（到期复习 48 小时内答对率）', () => {
 
     expect(result.suggestions.join(' ')).toContain('到期复习完成度偏低');
   });
+
+  it('提前作答（answeredAt < dueAt）不算到期复习样本', () => {
+    // dueOffsetHours 取负值 → dueAt 晚于 answeredAt，属于“提前作答”。
+    const early = [makeEvent('w-1', { dueOffsetHours: -5, isCorrect: true })];
+
+    const components = computeAssessmentComponents(early, NOW);
+
+    expect(components.dueReviewSamples).toBe(0);
+    expect(components.hasDueReviewSamples).toBe(false);
+    expect(components.dueReviewScore).toBe(NEUTRAL_DUE_REVIEW_SCORE);
+  });
+
+  it('提前作答与按时作答混在一起时只统计按时的那条', () => {
+    const events: AssessmentEvent[] = [
+      makeEvent('w-1', { dueOffsetHours: -5, isCorrect: true }),
+      makeEvent('w-2', { dueOffsetHours: 1, isCorrect: false, recognition: 'UNKNOWN' }),
+    ];
+
+    const components = computeAssessmentComponents(events, NOW);
+
+    expect(components.dueReviewSamples).toBe(1);
+    expect(components.dueReviewCorrect).toBe(0);
+    expect(components.dueReviewScore).toBe(0);
+  });
 });
 
 describe('评估：窗口过滤与自评差异', () => {
@@ -246,6 +309,61 @@ describe('levelFromScore', () => {
     { score: 0, expected: 'NEEDS_WORK' },
   ])('$score → $expected', ({ score, expected }) => {
     expect(levelFromScore(score)).toBe(expected);
+  });
+
+  it.each([
+    { score: 85 - 1e-12, expected: 'STABLE' },
+    { score: 70 - 1e-12, expected: 'SOLID' },
+    { score: 50 - 1e-12, expected: 'BUILDING' },
+  ])('浮点误差内的 $score 仍判 $expected（容差不吞掉真实降级）', ({ score, expected }) => {
+    expect(levelFromScore(score)).toBe(expected);
+  });
+
+  it.each([
+    { score: 85 - 1e-6, expected: 'SOLID' },
+    { score: 70 - 1e-6, expected: 'BUILDING' },
+    { score: 50 - 1e-6, expected: 'NEEDS_WORK' },
+  ])('超出容差的 $score 正常降级为 $expected', ({ score, expected }) => {
+    expect(levelFromScore(score)).toBe(expected);
+  });
+});
+
+describe('评估：建议按最大短板排序', () => {
+  it('正确率缺口最大时它排第一并标“首要短板”', () => {
+    // 10 个词 × 6 次 = 60 次作答；正确 12 次（6 个词各 2 次，A=0.2）、认识 30 次（R=0.5），
+    // 至少答对一次的词 6 个 / 词库 25 词 = 覆盖 0.24。
+    // 缺口：正确率 0.8 > 覆盖 0.76 > 自评差异 0.3。
+    const events: AssessmentEvent[] = [];
+    for (let wordIndex = 0; wordIndex < 10; wordIndex += 1) {
+      for (let answerIndex = 0; answerIndex < 6; answerIndex += 1) {
+        const isCorrect = wordIndex < 6 && answerIndex < 2;
+        const recognition: Recognition = wordIndex < 5 ? 'KNOWN' : 'UNKNOWN';
+        events.push(makeEvent(`w-${wordIndex}`, { isCorrect, recognition }));
+      }
+    }
+
+    const result = evaluateAssessment(events, 25, NOW);
+    const shortfallSuggestions = result.suggestions.filter((suggestion) =>
+      suggestion.startsWith('首要短板：') || suggestion.startsWith('次要短板：'),
+    );
+
+    expect(shortfallSuggestions[0]).toBe(
+      '首要短板：正确率偏低：建议优先复习错词，并在错词本集中练习。',
+    );
+    expect(shortfallSuggestions.some((suggestion) => suggestion.includes('词库覆盖偏低'))).toBe(true);
+    expect(shortfallSuggestions.some((suggestion) => suggestion.includes('差异较大'))).toBe(true);
+    // 缺口小的排后面
+    expect(shortfallSuggestions[shortfallSuggestions.length - 1]).toContain('差异较大');
+  });
+
+  it('“复习样本不足”是说明而非短板，永远排在任何短板之前', () => {
+    const events = buildSamples(MIN_DISTINCT_WORDS, 2, { isCorrect: false, recognition: 'KNOWN' });
+
+    const result = evaluateAssessment(events, 100, NOW);
+
+    expect(result.level).not.toBe('INSUFFICIENT_SAMPLE');
+    expect(result.suggestions[0]).toContain('复习样本不足');
+    expect(result.suggestions[1]).toMatch(/^首要短板：/u);
   });
 });
 

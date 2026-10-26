@@ -125,6 +125,60 @@ describe('generateDistractors：ZH_TO_EN', () => {
     expect(distractors).toHaveLength(3);
     expect([...distractors].sort()).toEqual(['banana', 'yacht', 'zebra']);
   });
+
+  it('也剔除同义候选（employ 同样表“采用”，选了也是对的）', () => {
+    // 池里只放 3 个候选，其中一个与目标同义：若同义剔除没生效，返回的会是 3 项且含 employ；
+    // 剔除生效后只剩 2 个可用干扰项（宁少不编造）。
+    const synonymPool: WordWithSenses[] = [
+      { wordId: 'w-employ', lemma: 'employ', pos: 'v.', senses: ['采用', '雇佣'] },
+      { wordId: 'w-adapt', lemma: 'adapt', pos: 'v.', senses: ['适应'] },
+      { wordId: 'w-adept', lemma: 'adept', pos: 'adj.', senses: ['熟练的'] },
+    ];
+
+    const distractors = generateDistractors(target, synonymPool, 'ZH_TO_EN', 'seed-zh-synonym');
+
+    expect(distractors).not.toContain('employ');
+    expect([...distractors].sort()).toEqual(['adapt', 'adept']);
+  });
+
+  it.each([
+    { name: '全角分号', sense: '采用；雇佣' },
+    { name: '半角逗号', sense: '采用, 雇佣' },
+    { name: '斜杠', sense: '采用/雇佣' },
+    { name: '顿号', sense: '采用、雇佣' },
+    { name: '全角逗号', sense: '采用，雇佣' },
+  ])('复合义项（$name）按分隔符切分后仍能识别交集', ({ sense }) => {
+    // 复合义项若没被切分，"采用；雇佣" 整体不等于 "采用"，employ 会被当成合法干扰项。
+    const synonymPool: WordWithSenses[] = [
+      { wordId: 'w-employ', lemma: 'employ', pos: 'v.', senses: [sense] },
+      { wordId: 'w-adapt', lemma: 'adapt', pos: 'v.', senses: ['适应'] },
+      { wordId: 'w-adept', lemma: 'adept', pos: 'adj.', senses: ['熟练的'] },
+    ];
+
+    const distractors = generateDistractors(target, synonymPool, 'ZH_TO_EN', 'seed-zh-compound');
+
+    expect(distractors).not.toContain('employ');
+    expect(distractors).toHaveLength(2);
+  });
+
+  it('目标本身带复合义项时，同样剔除命中任一义项的候选', () => {
+    const compoundTarget: WordWithSenses = {
+      wordId: 'w-adopt',
+      lemma: 'adopt',
+      pos: 'v.',
+      senses: ['采用；收养'],
+    };
+    const synonymPool: WordWithSenses[] = [
+      { wordId: 'w-employ', lemma: 'employ', pos: 'v.', senses: ['采用'] },
+      { wordId: 'w-adapt', lemma: 'adapt', pos: 'v.', senses: ['适应'] },
+      { wordId: 'w-adept', lemma: 'adept', pos: 'adj.', senses: ['熟练的'] },
+    ];
+
+    const distractors = generateDistractors(compoundTarget, synonymPool, 'ZH_TO_EN', 'seed-zh-target');
+
+    expect(distractors).not.toContain('employ');
+    expect(distractors).toHaveLength(2);
+  });
 });
 
 describe('generateDistractors：确定性与池不足', () => {
@@ -176,6 +230,109 @@ describe('resolveDistractorMode', () => {
       ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((seed) => resolveDistractorMode('MIXED', seed)),
     );
     expect(modes.size).toBe(2);
+  });
+
+  it('同一 session seed 下按 wordId 派生，8 题里两种方向都会出现', () => {
+    const wordIds = ['w-1', 'w-2', 'w-3', 'w-4', 'w-5', 'w-6', 'w-7', 'w-8'];
+
+    const modes = wordIds.map((wordId) => resolveDistractorMode('MIXED', 'session-1', wordId));
+
+    // 关键回归点：如果派生键只含 seed，8 题会退化成同一个方向。
+    expect(modes).toContain('EN_TO_ZH');
+    expect(modes).toContain('ZH_TO_EN');
+    expect(modes).toEqual(
+      wordIds.map((wordId) => resolveDistractorMode('MIXED', 'session-1', wordId)),
+    );
+  });
+
+  it('同一 (seed, wordId) 跨端跨次调用结果一致', () => {
+    expect(resolveDistractorMode('MIXED', 'session-1', 'w-3')).toBe(
+      resolveDistractorMode('MIXED', 'session-1', 'w-3'),
+    );
+    expect(resolveDistractorMode('MIXED', 'session-2', 'w-3')).toBe(
+      resolveDistractorMode('MIXED', 'session-2', 'w-3'),
+    );
+  });
+
+  it('区分大小写/不同 seed 会改变方向分布，但不是恒定同一方向', () => {
+    const modes = new Set(
+      Array.from({ length: 8 }, (_unused, index) =>
+        resolveDistractorMode('MIXED', 'another-session', `word-${index}`),
+      ),
+    );
+
+    expect(modes.size).toBe(2);
+  });
+});
+
+describe('generateDistractors：MIXED 在会话内逐题切换方向', () => {
+  /** 候选池：英文 lemma 全为纯字母，中文义项全为“义项N”，便于按形态区分方向。 */
+  const MIXED_POOL: WordWithSenses[] = [
+    { wordId: 'p-1', lemma: 'alpha', pos: 'v.', senses: ['义项1'] },
+    { wordId: 'p-2', lemma: 'bravo', pos: 'v.', senses: ['义项2'] },
+    { wordId: 'p-3', lemma: 'charlie', pos: 'v.', senses: ['义项3'] },
+    { wordId: 'p-4', lemma: 'delta', pos: 'v.', senses: ['义项4'] },
+    { wordId: 'p-5', lemma: 'echo', pos: 'v.', senses: ['义项5'] },
+    { wordId: 'p-6', lemma: 'foxtrot', pos: 'v.', senses: ['义项6'] },
+  ];
+
+  it('同一 session seed 下 8 个目标词同时出现中文选项与英文选项', () => {
+    const targets: WordWithSenses[] = Array.from({ length: 8 }, (_unused, index) => ({
+      wordId: `t-${index + 1}`,
+      lemma: `target${index + 1}`,
+      pos: 'v.',
+      senses: [`目标义项${index + 1}`],
+    }));
+
+    const directions = targets.map((target) => {
+      const distractors = generateDistractors(target, MIXED_POOL, 'MIXED', 'session-mixed');
+      expect(distractors).toHaveLength(3);
+      // 纯字母 = 英文 lemma（ZH_TO_EN），否则是中文义项（EN_TO_ZH）。
+      const isEnglish = distractors.every((answer) => /^[a-z]+$/u.test(answer));
+      const allChinese = distractors.every((answer) => /^义项\d$/u.test(answer));
+      expect(isEnglish || allChinese).toBe(true);
+      return isEnglish ? 'ZH_TO_EN' : 'EN_TO_ZH';
+    });
+
+    expect(new Set(directions).size).toBe(2);
+  });
+
+  it('同一 (seed, wordId) 结果完全可重放', () => {
+    const target: WordWithSenses = { wordId: 't-1', lemma: 'target1', pos: 'v.', senses: ['目标义项1'] };
+
+    expect(generateDistractors(target, MIXED_POOL, 'MIXED', 'session-mixed')).toEqual(
+      generateDistractors(target, MIXED_POOL, 'MIXED', 'session-mixed'),
+    );
+  });
+});
+
+describe('generateDistractors：并列项顺序（锁定洗牌序，M1）', () => {
+  /** 3 个同词性、义项长度相同的候选 → `EN_TO_ZH` 相似度完全并列。 */
+  const TIE_POOL: WordWithSenses[] = [
+    { wordId: 'w-a', lemma: 'accept', pos: 'v.', senses: ['接受'] },
+    { wordId: 'w-b', lemma: 'borrow', pos: 'v.', senses: ['借入'] },
+    { wordId: 'w-c', lemma: 'collect', pos: 'v.', senses: ['收集'] },
+  ];
+
+  it('相似度并列时按洗牌序输出，固定期望值锁定该行为', () => {
+    // 三个候选都是 v. 且义项长度相同 → similarity 全等（0.45 + 0.20 * 1）。
+    // 因此输出顺序由 `seededShuffle(pool, seed)` 决定；本用例锁定当前实现，
+    // 若未来改动 PRNG/洗牌算法，这里会失败并提醒复核“同 seed 可重放”的承诺。
+    expect(generateDistractors(TARGET, TIE_POOL, 'EN_TO_ZH', 'seed-tie')).toEqual([
+      '收集',
+      '借入',
+      '接受',
+    ]);
+  });
+
+  it('相邻 seed 的并列顺序可能不同（证明顺序确实来自种子而非固定规则）', () => {
+    const orders = new Set(
+      ['seed-tie-1', 'seed-tie-2', 'seed-tie-3', 'seed-tie-4', 'seed-tie-5'].map((seed) =>
+        generateDistractors(TARGET, TIE_POOL, 'EN_TO_ZH', seed).join('|'),
+      ),
+    );
+
+    expect(orders.size).toBeGreaterThan(1);
   });
 });
 

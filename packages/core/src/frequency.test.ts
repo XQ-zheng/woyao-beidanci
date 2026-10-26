@@ -118,4 +118,74 @@ describe('frequencyPercentile', () => {
     expect(frequencyPercentile(makeEntry({ rank: 1 }), 1)).toBeCloseTo(0.5, 10);
     expect(frequencyPercentile(makeEntry({ rank: 1 }), 1000)).toBeCloseTo(0.9995, 10);
   });
+
+  it('并列组按 equal 折算：less 不含并列组自身', () => {
+    // rank 4、并列 3 个、共 10 个 → less = 10 - 4 - 2 = 4 → (4 + 1.5)/10 = 0.55
+    expect(frequencyPercentile(makeEntry({ rank: 4, equalCount: 3 }), 10)).toBeCloseTo(0.55, 10);
+  });
+
+  it('并列组等于全体（rank=1、equal=10）→ 0.5', () => {
+    expect(frequencyPercentile(makeEntry({ rank: 1, equalCount: 10 }), 10)).toBeCloseTo(0.5, 10);
+  });
+
+  it.each([
+    { name: '并列数为 0', equalCount: 0 },
+    { name: '并列数为负', equalCount: -2 },
+    { name: '并列数为小数', equalCount: 1.5 },
+    { name: '并列数为 NaN', equalCount: Number.NaN },
+  ])('$name → 无法计算（null）', ({ equalCount }) => {
+    expect(frequencyPercentile(makeEntry({ rank: 4, equalCount }), 10)).toBeNull();
+  });
+
+  it('并列组超出已知词数（自相矛盾）→ null', () => {
+    // rank 9 + equal 3 - 1 = 11 > 10
+    expect(frequencyPercentile(makeEntry({ rank: 9, equalCount: 3 }), 10)).toBeNull();
+  });
+});
+
+describe('并列（equalCount）跨越分位数边界', () => {
+  it('并列组跨越 P90：正确判 MEDIUM（不提供 equalCount 会被虚高成 HIGH）', () => {
+    // rank 10、并列 5 个、共 100 个：
+    // 正确 → less = 100 - 10 - 4 = 86 → (86 + 2.5)/100 = 0.885 → MEDIUM
+    // 若误把并列组算进 less（equal=1）→ (90 + 0.5)/100 = 0.905 → 被误判为 HIGH
+    const entry = makeEntry({ rank: 10, equalCount: 5 });
+
+    expect(frequencyPercentile(entry, 100)).toBeCloseTo(0.885, 10);
+    expect(classifyFrequencyImportance(entry, 100)).toBe('MEDIUM');
+    expect(frequencyPercentile(makeEntry({ rank: 10 }), 100)).toBeCloseTo(0.905, 10);
+  });
+
+  it('并列组跨越 P60：正确判 BASIC（不提供 equalCount 会被虚高成 MEDIUM）', () => {
+    // rank 40、并列 5 个、共 100 个：
+    // 正确 → less = 100 - 40 - 4 = 56 → (56 + 2.5)/100 = 0.585 → BASIC
+    // 若按 equal=1 → (60 + 0.5)/100 = 0.605 → 被误判为 MEDIUM
+    const entry = makeEntry({ rank: 40, equalCount: 5 });
+
+    expect(frequencyPercentile(entry, 100)).toBeCloseTo(0.585, 10);
+    expect(classifyFrequencyImportance(entry, 100)).toBe('BASIC');
+    expect(frequencyPercentile(makeEntry({ rank: 40 }), 100)).toBeCloseTo(0.605, 10);
+  });
+
+  it('并列组恰好整体落在 P90 以上 → 仍为 HIGH', () => {
+    // rank 1、并列 4 个、共 100 个 → less = 100 - 1 - 3 = 96 → (96 + 2)/100 = 0.98
+    const entry = makeEntry({ rank: 1, equalCount: 4 });
+
+    expect(frequencyPercentile(entry, 100)).toBeCloseTo(0.98, 10);
+    expect(classifyFrequencyImportance(entry, 100)).toBe('HIGH');
+  });
+
+  it('并列组大小为 1（默认）时与原公式一致', () => {
+    expect(frequencyPercentile(makeEntry({ rank: 10, equalCount: 1 }), 100)).toBeCloseTo(
+      frequencyPercentile(makeEntry({ rank: 10 }), 100) ?? Number.NaN,
+      12,
+    );
+  });
+
+  it('并列组越界时降级为 UNKNOWN，而不是当成低频', () => {
+    const entry = makeEntry({ rank: 98, equalCount: 5 });
+
+    expect(frequencyPercentile(entry, 100)).toBeNull();
+    expect(classifyFrequencyImportance(entry, 100)).toBe('UNKNOWN');
+    expect(classifyFrequencyImportance(entry, 100)).not.toBe('BASIC');
+  });
 });

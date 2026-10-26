@@ -7,12 +7,15 @@
  *   V1.0 核心层没有已核验许可的主题数据，因此“主题”项恒为 0（绝不编造主题标签）。
  * - `ZH_TO_EN`：正确答案是目标词的英文 lemma，干扰项取候选词的 lemma；
  *   相似度 = `编辑距离相似 0.65 + 共同前缀 0.20 + 长度接近 0.15`。
- * - `MIXED`：用**同一个种子**确定本次采用哪种模式（设计：每个 session 用有种子的 50/50 序列）。
+ * - `MIXED`：用 `seed` + `wordId` 派生的随机数逐题做 50/50 选择（设计：每个 session 用有种子的
+ *   50/50 序列），因此同一 session 内不同词会走不同方向，而同一 `(seed, wordId)` 永远可重放。
  * - 排序 = `stableShuffle(pool, seed)` 后按相似度降序（同分保持洗牌序），因此同一 seed 完全可重放。
  * - 候选不足时**降级到次要相似层**，绝不编造单词或释义；仍然不足就少返回几个（由 UI 切换为拼写/输入作答）。
  *
- * 与“可接受答案”有关的安全规则：与目标释义有交集的候选一律剔除，
- * 因为同义词会让两个选项都可判对。
+ * 与“可接受答案”有关的安全规则：**两种模式**下与目标义项有交集的候选一律剔除——
+ * `EN_TO_ZH` 里它会让两个中文选项都可判对；`ZH_TO_EN` 里它是同一义项的另一条英文（如
+ * `adopt` / `employ` 都表“采用”），选了同样正确。义项比较前先按分隔符切分，避免
+ * `"采用；雇佣"` 这类复合义项漏检。
  */
 
 import type { TrainingMode } from './models';
@@ -105,6 +108,54 @@ function normalizeText(value: string): string {
  */
 function normalizePos(pos: string): string {
   return normalizeText(pos).replace(/\.+$/u, '');
+}
+
+/**
+ * 义项分隔符：上游词典转换常把多义项拼进一个字符串，
+ * 例如 `"放弃；抛弃"`、`"采用, 雇佣"`、`"放弃/抛弃"`。
+ */
+const SENSE_SEPARATOR_PATTERN = /[;；,，、/]/u;
+
+/**
+ * 把义项字段拆成归一化后的义项集合。
+ *
+ * 先按分隔符切分再逐项归一，避免 `"放弃；抛弃"` 与 `"放弃"` 因整体字符串不等而漏检交集。
+ *
+ * @param senses 原始义项数组（元素可能含复合义项）。
+ * @returns 归一化义项集合。
+ */
+function normalizeSenseKeys(senses: readonly string[]): Set<string> {
+  const keys = new Set<string>();
+  const list: readonly string[] = Array.isArray(senses) ? senses : [];
+  for (const sense of list) {
+    if (typeof sense !== 'string') {
+      continue;
+    }
+    for (const part of sense.split(SENSE_SEPARATOR_PATTERN)) {
+      const key = normalizeText(part);
+      if (key !== '') {
+        keys.add(key);
+      }
+    }
+  }
+  return keys;
+}
+
+/**
+ * 判断两个义项集合是否有交集。
+ *
+ * @param left 左集合。
+ * @param right 右集合。
+ * @returns 是否存在共同义项。
+ */
+function sharesAnySense(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  const [smaller, larger] = left.size <= right.size ? [left, right] : [right, left];
+  for (const key of smaller) {
+    if (larger.has(key)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -237,16 +288,23 @@ function similarityOf(
 /**
  * 根据模式与种子确定本次真正使用的模式。
  *
- * `MIXED` 用同一个种子派生的随机数做 50/50 选择，因此同一次 session 可重放；
- * 其它模式原样返回。非法模式抛 `InvalidDistractorRequestError`。
+ * `MIXED` 用种子派生的随机数做 50/50 选择，其它模式原样返回。
+ *
+ * **派生键包含 `wordId`**：调用方通常用**session 级 seed** 逐题调用；
+ * 若只按 seed 派生，同一 session 的所有题会退化为同一方向（实测 6 题全 EN_TO_ZH）。
+ * 带上 `wordId` 后，同一 session 内每题独立取值，形成设计 §6 要求的
+ * “每个 session 用有种子的 50/50 随机序列”，且仍是纯确定性的：
+ * 同一 `(seed, wordId)` 在任何端都得到同一结果。
  *
  * @param mode 训练模式。
- * @param seed 字符串种子。
+ * @param seed session 级字符串种子。
+ * @param wordId 当前题的词条 ID（`MIXED` 派生模式时参与计算）。
  * @returns `EN_TO_ZH` 或 `ZH_TO_EN`。
  */
 export function resolveDistractorMode(
   mode: TrainingMode,
   seed: string,
+  wordId = '',
 ): 'EN_TO_ZH' | 'ZH_TO_EN' {
   if (mode === 'EN_TO_ZH' || mode === 'ZH_TO_EN') {
     return mode;
@@ -254,7 +312,7 @@ export function resolveDistractorMode(
   if (mode !== 'MIXED') {
     throw new InvalidDistractorRequestError('mode', `未知的训练模式：${String(mode)}`);
   }
-  return createSeededRandom(seed)() < 0.5 ? 'EN_TO_ZH' : 'ZH_TO_EN';
+  return createSeededRandom(`${seed}|${wordId}`)() < 0.5 ? 'EN_TO_ZH' : 'ZH_TO_EN';
 }
 
 /**
@@ -282,7 +340,7 @@ export function generateDistractors(
     throw new InvalidDistractorRequestError('seed', 'seed 必须是字符串');
   }
 
-  const effectiveMode = resolveDistractorMode(mode, seed);
+  const effectiveMode = resolveDistractorMode(mode, seed, target.wordId);
   const correctAnswer = displayAnswerOf(target, effectiveMode);
   const correctAnswerKey = normalizeText(correctAnswer);
   if (correctAnswerKey === '') {
@@ -290,11 +348,7 @@ export function generateDistractors(
     return [];
   }
 
-  const targetSenseKeys = new Set(
-    (Array.isArray(target.senses) ? target.senses : [])
-      .map((sense) => normalizeText(sense))
-      .filter((sense) => sense !== ''),
-  );
+  const targetSenseKeys = normalizeSenseKeys(target.senses);
 
   const usableCandidates: WordWithSenses[] = [];
   const seenWordIds = new Set<string>([target.wordId]);
@@ -314,13 +368,13 @@ export function generateDistractors(
     if (answerKey === '' || seenAnswerKeys.has(answerKey)) {
       continue;
     }
-    if (effectiveMode === 'EN_TO_ZH') {
-      const candidateSenses = Array.isArray(candidate.senses) ? candidate.senses : [];
-      const overlaps = candidateSenses.some((sense) => targetSenseKeys.has(normalizeText(sense)));
-      if (overlaps) {
-        // 同义/近义项会让两个选项都可判对，直接剔除。
-        continue;
-      }
+    // 两种模式都要剔除“语义上可能有第二个正确答案”的候选（设计 §6）：
+    // - EN_TO_ZH：选项是中文义项，候选若也表该义项，两个选项都可判对；
+    // - ZH_TO_EN：题面是中文义项、选项是英文 lemma，候选若是同一义项的另一个英文词
+    //   （例如 employ 也表“采用”），用户选它同样正确。
+    // 判定用“义项集合是否有交集”，属**有意保守**：池会收缩，但绝不产生歧义正确项。
+    if (sharesAnySense(normalizeSenseKeys(candidate.senses), targetSenseKeys)) {
+      continue;
     }
     seenWordIds.add(candidate.wordId);
     seenAnswerKeys.add(answerKey);
@@ -342,7 +396,10 @@ export function generateDistractors(
     };
   });
 
-  // 同分时保持洗牌序（即设计里的 stableShuffle → 稳定排序），确保同一 seed 可重放。
+  // 同分时保持洗牌序（设计里的 `stableShuffle → sortBy(similarity DESC)`）：
+  // 注意这意味着**并列项的选择依赖 seededShuffle/PRNG 的实现细节**，
+  // 同一 seed 在当前实现下完全可重放；若未来改动 `seededShuffle`，并列项顺序会变化。
+  // 有固定期望值测试锁定这一行为（distractors.test.ts「并列项顺序」）。
   ranked.sort((left, right) => right.similarity - left.similarity || left.order - right.order);
 
   const preferredCandidates = ranked.filter((candidate) => candidate.preferred);

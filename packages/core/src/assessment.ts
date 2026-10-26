@@ -333,6 +333,12 @@ export function computeAssessmentComponents(
 }
 
 /**
+ * 等级判定的浮点容差：`0.5A+0.15R+0.25M+0.1E` 在恰好 0.85/0.70/0.50 时
+ * 可能因二进制浮点误差落到下一档（例如 84.99999999999999），这里用极小容差兜住。
+ */
+const LEVEL_THRESHOLD_EPSILON = 1e-9;
+
+/**
  * 按分数线给出等级（不含样本门槛）。
  *
  * @param score 0–100 的得分。
@@ -342,13 +348,13 @@ export function levelFromScore(score: number): Exclude<AssessmentLevel, 'INSUFFI
   if (!Number.isFinite(score)) {
     throw new InvalidAssessmentInputError('score', '得分必须是有限数字');
   }
-  if (score >= STABLE_SCORE_THRESHOLD) {
+  if (score + LEVEL_THRESHOLD_EPSILON >= STABLE_SCORE_THRESHOLD) {
     return 'STABLE';
   }
-  if (score >= SOLID_SCORE_THRESHOLD) {
+  if (score + LEVEL_THRESHOLD_EPSILON >= SOLID_SCORE_THRESHOLD) {
     return 'SOLID';
   }
-  if (score >= BUILDING_SCORE_THRESHOLD) {
+  if (score + LEVEL_THRESHOLD_EPSILON >= BUILDING_SCORE_THRESHOLD) {
     return 'BUILDING';
   }
   return 'NEEDS_WORK';
@@ -366,6 +372,14 @@ function formatPercent(value: number): string {
 
 /**
  * 计算所选词库的水平评估。
+ *
+ * 两点口径说明（UI 需与之一致）：
+ * 1. `validAnswers === 0` 时 `score` 直接为 0（不套公式，避免“0 次作答也有 22.5 分”的误导），
+ *    等级仍为 `INSUFFICIENT_SAMPLE`；
+ * 2. `A` 只在**有样本的子窗口**内加权（近 30 天 0.6 / 其余 0.4 按实际窗口归一），
+ *    因此“只在今天做过题且全对”的用户 A 会是 100%，展示时应同时给出样本量。
+ *
+ * 窗口按 `90 × 24h` 固定毫秒计算（不按本地日历日），与实例时区无关。
  *
  * @param events 该词库的作答事件。
  * @param deckSize 当前词库词数（用于 coverage）。
@@ -406,21 +420,45 @@ export function evaluateAssessment(
     );
   }
   if (!components.hasDueReviewSamples) {
+    // “说明型”提示，不是短板：必须在任何建议之前如实交代 M 用了中性值。
     suggestions.push(
       `复习样本不足：M（到期复习 ${DUE_REVIEW_ON_TIME_HOURS} 小时内答对率）按中性值 ${NEUTRAL_DUE_REVIEW_SCORE} 计算。`,
     );
-  } else if (components.dueReviewScore < 0.6) {
-    suggestions.push('到期复习完成度偏低：建议减少每日新词，先清理逾期复习。');
   }
+
+  // 建议由**最大短板**决定（设计 9）：先量化各维度缺口，再按缺口降序输出，首条标“首要短板”。
+  const shortfalls: { gap: number; message: string }[] = [];
   if (components.validAnswers > 0 && components.accuracy < 0.6) {
-    suggestions.push('正确率偏低：建议优先复习错词，并在错词本集中练习。');
+    shortfalls.push({
+      gap: 1 - components.accuracy,
+      message: '正确率偏低：建议优先复习错词，并在错词本集中练习。',
+    });
+  }
+  if (components.hasDueReviewSamples && components.dueReviewScore < 0.6) {
+    shortfalls.push({
+      gap: 1 - components.dueReviewScore,
+      message: '到期复习完成度偏低：建议减少每日新词，先清理逾期复习。',
+    });
   }
   if (coverage < 0.3) {
-    suggestions.push(`词库覆盖偏低（${formatPercent(coverage)}）：建议适当增加新词，扩大已掌握范围。`);
+    shortfalls.push({
+      gap: 1 - coverage,
+      message: `词库覆盖偏低（${formatPercent(coverage)}）：建议适当增加新词，扩大已掌握范围。`,
+    });
   }
   if (components.validAnswers > 0 && Math.abs(components.recognitionRate - components.accuracy) >= 0.25) {
-    suggestions.push('自评“认识”与实际正确率差异较大：建议减少猜测，增加语境练习。');
+    shortfalls.push({
+      gap: Math.abs(components.recognitionRate - components.accuracy),
+      message: '自评“认识”与实际正确率差异较大：建议减少猜测，增加语境练习。',
+    });
   }
+
+  // Array.prototype.sort 稳定：缺口相同时保持上面的固定定义顺序，结果可复现。
+  shortfalls.sort((left, right) => right.gap - left.gap);
+  shortfalls.forEach((shortfall, index) => {
+    suggestions.push(index === 0 ? `首要短板：${shortfall.message}` : `次要短板：${shortfall.message}`);
+  });
+
   if (suggestions.length === 0) {
     suggestions.push('各项指标均衡，保持当前节奏即可。');
   }

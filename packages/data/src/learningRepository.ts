@@ -220,16 +220,60 @@ function requireNonEmptyString(value: string, field: string): string {
 }
 
 /**
- * 校验 ISO-8601 时间串。
+ * 允许落库的唯一时间形态：**UTC、ISO-8601、毫秒、`Z` 结尾**。
+ *
+ * 为什么必须钉死格式而不是只做 `Date.parse`：库里所有时间列都靠**字符串字典序**比较
+ * （`listDue` 的 `due_at <= ?`、`ORDER BY answered_at`、`listSessions` 的区间），
+ * 只要混进一种别的写法，比较结果就会静默出错：
+ * - `2025-06-30T12:00:00+08:00` → 字典序把它排在 `2025-06-30T04:00:00.000Z` **之后**，
+ *   而两者其实是同一时刻；
+ * - `2025-06-30T04:00:00Z`（无毫秒）→ 与带毫秒的值比较时长度不同，边界会错；
+ * - `2025-06-30 04:00:00`（空格分隔 / 本地时间）→ 既非 UTC 也不可比。
+ *
+ * 刻意**不**用 `new Date(value).toISOString()` 归一化：那会把调用方的 bug
+ * （比如传了本地时间）变成一条“看起来对”的数据，等到跨时区才暴露。
+ */
+const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+/** 本地日 `YYYY-MM-DD`（同样参与字典序比较，因此也钉死形态）。 */
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+
+/**
+ * 校验 UTC ISO-8601 毫秒时间串。
  *
  * @param value 时间串。
  * @param field 字段名。
  * @returns 原值。
- * @throws {InvalidRepositoryInputError} 无法解析时。
+ * @throws {InvalidRepositoryInputError} 格式不符或无法解析时。
  */
 function requireIsoInstant(value: string, field: string): string {
-  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
-    throw new InvalidRepositoryInputError(field, `无法解析的时间：${String(value)}`);
+  if (
+    typeof value !== 'string' ||
+    !ISO_INSTANT_PATTERN.test(value) ||
+    Number.isNaN(Date.parse(value))
+  ) {
+    throw new InvalidRepositoryInputError(
+      field,
+      `必须是 UTC ISO-8601 毫秒格式（YYYY-MM-DDTHH:mm:ss.sssZ），收到 ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * 校验本地日 `YYYY-MM-DD`。
+ *
+ * @param value 日期串。
+ * @param field 字段名。
+ * @returns 原值。
+ * @throws {InvalidRepositoryInputError} 格式不符时。
+ */
+function requireLocalDate(value: string, field: string): string {
+  if (typeof value !== 'string' || !LOCAL_DATE_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new InvalidRepositoryInputError(
+      field,
+      `必须是 YYYY-MM-DD，收到 ${String(value)}`,
+    );
   }
   return value;
 }
@@ -275,12 +319,7 @@ function assertValidEvent(event: LearningEventRecord): void {
     throw new InvalidRepositoryInputError('stageAfter', 'stageBefore/stageAfter 必须是整数');
   }
   requireIsoInstant(event.answeredAt, 'answeredAt');
-  if (typeof event.localDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(event.localDate)) {
-    throw new InvalidRepositoryInputError(
-      'localDate',
-      `localDate 必须是 YYYY-MM-DD，收到 ${String(event.localDate)}`,
-    );
-  }
+  requireLocalDate(event.localDate, 'localDate');
   requireNonEmptyString(event.timeZone, 'timeZone');
   if (event.durationMs !== null) {
     requireNonNegativeInteger(event.durationMs, 'durationMs');
@@ -289,6 +328,48 @@ function assertValidEvent(event: LearningEventRecord): void {
     throw new InvalidRepositoryInputError(
       'syncedAt',
       '本地新写入的事件 syncedAt 必须为 null（同步流程回填，不由课程服务传入）',
+    );
+  }
+}
+
+/**
+ * 校验学习状态。
+ *
+ * 重点是 `dueAt` / `lastReviewedAt` / `suppressedAt`：它们要么参与 `listDue` 的范围过滤
+ * （`due_at <= ?`），要么参与 `ORDER BY`，全部靠**字符串字典序**比较，因此必须与事件时间
+ * 用同一套格式校验。只校验事件不校验状态等于留了扇后门——状态是调用方算出来的，
+ * 恰恰是最容易混进本地时间/带偏移写法的地方。
+ *
+ * @param state 学习状态。
+ * @throws {InvalidRepositoryInputError} 任一字段非法时。
+ */
+function assertValidState(state: LearningState): void {
+  if (state === null || typeof state !== 'object') {
+    throw new InvalidRepositoryInputError('state', '学习状态不能为空');
+  }
+  requireNonEmptyString(state.userWordId, 'state.userWordId');
+  requireNonEmptyString(state.deckId, 'state.deckId');
+  requireNonEmptyString(state.wordId, 'state.wordId');
+  requireIsoInstant(state.dueAt, 'state.dueAt');
+  if (state.lastReviewedAt !== null) {
+    requireIsoInstant(state.lastReviewedAt, 'state.lastReviewedAt');
+  }
+  if (state.suppressedAt !== null) {
+    requireIsoInstant(state.suppressedAt, 'state.suppressedAt');
+  }
+  if (!Number.isInteger(state.stage)) {
+    throw new InvalidRepositoryInputError(
+      'state.stage',
+      `stage 必须是整数，收到 ${String(state.stage)}`,
+    );
+  }
+  requireNonNegativeInteger(state.correctCount, 'state.correctCount');
+  requireNonNegativeInteger(state.wrongCount, 'state.wrongCount');
+  requireNonNegativeInteger(state.streakCorrect, 'state.streakCorrect');
+  if (typeof state.weight !== 'number' || !Number.isFinite(state.weight)) {
+    throw new InvalidRepositoryInputError(
+      'state.weight',
+      `weight 必须是有限数字，收到 ${String(state.weight)}`,
     );
   }
 }
@@ -400,12 +481,7 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       state: LearningState,
     ): AppendEventResult {
       assertValidEvent(event);
-      if (state === null || typeof state !== 'object') {
-        throw new InvalidRepositoryInputError('state', '学习状态不能为空');
-      }
-      if (typeof state.userWordId !== 'string' || state.userWordId.trim() === '') {
-        throw new InvalidRepositoryInputError('state.userWordId', '学习状态主键必须是非空字符串');
-      }
+      assertValidState(state);
       if (state.userWordId !== event.userWordId) {
         // 不是入参格式问题，而是调用方把两条不同记录拼在了一起：必须整笔回滚。
         throw new RepositoryInvariantError(
@@ -515,9 +591,7 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       if (session.endedAt !== null) {
         requireIsoInstant(session.endedAt, 'endedAt');
       }
-      if (typeof session.localDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(session.localDate)) {
-        throw new InvalidRepositoryInputError('localDate', 'localDate 必须是 YYYY-MM-DD');
-      }
+      requireLocalDate(session.localDate, 'localDate');
       requireNonEmptyString(session.timeZone, 'timeZone');
       requireNonNegativeInteger(session.newCount, 'newCount');
       requireNonNegativeInteger(session.reviewCount, 'reviewCount');
@@ -572,14 +646,8 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
     },
 
     listDailyStats(fromLocalDate: string, toLocalDate: string): DailyStatRecord[] {
-      if (
-        typeof fromLocalDate !== 'string' ||
-        !/^\d{4}-\d{2}-\d{2}$/u.test(fromLocalDate) ||
-        typeof toLocalDate !== 'string' ||
-        !/^\d{4}-\d{2}-\d{2}$/u.test(toLocalDate)
-      ) {
-        throw new InvalidRepositoryInputError('localDate', '本地日期必须是 YYYY-MM-DD');
-      }
+      requireLocalDate(fromLocalDate, 'fromLocalDate');
+      requireLocalDate(toLocalDate, 'toLocalDate');
       const rows = selectDailyStats.all(fromLocalDate, toLocalDate) as {
         local_date: string;
         total: number;

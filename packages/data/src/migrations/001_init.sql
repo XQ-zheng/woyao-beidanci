@@ -11,6 +11,10 @@
 --   * 唯一约束用 **部分索引（WHERE deleted_at IS NULL）**：软删除后允许重新
 --     添加同一个词/义项，否则「删除再添加」会撞唯一键。
 --   * SQL 用 snake_case，TS DTO 用 camelCase，映射在仓储层显式完成。
+--
+-- **迁移文件的修改规则**：V1.0 尚未发布、没有真实用户库，因此最初的 DDL 允许就地修订；
+-- **一旦发布，schema 的任何变更都只能新增迁移文件（003_xxx.sql…），不得再改既有文件**——
+-- 已经执行过该版本的库不会被重放，改文件等于凭空造出两个不同的库结构。
 -- =============================================================================
 
 -- 词典、频率、音频、图片、字体等一切外部内容的来源（含用户自建内容的“本地”来源）。
@@ -151,6 +155,10 @@ CREATE INDEX IF NOT EXISTS idx_learning_state_word ON learning_state (word_id);
 CREATE TABLE IF NOT EXISTS learning_events (
   event_id TEXT PRIMARY KEY,
   user_word_id TEXT NOT NULL,
+  -- `deck_id` / `word_id` 是**冗余写**：可由 `user_word_id` 反解（`${deckId}:${wordId}`）或
+  -- JOIN `learning_state` 得到。保留它们是为了让「按词库/按词汇总」与同步 payload 不必 JOIN，
+  -- 代价是一次写入两列冗余值；真相仍然只有 `user_word_id` + `learning_state` 一处。
+  -- 取舍记在 docs/architecture.md §4.2（b37d647）。
   deck_id TEXT,
   word_id TEXT,
   session_id TEXT,
@@ -248,6 +256,11 @@ CREATE INDEX IF NOT EXISTS idx_associations_word ON associations (word_id, kind)
 --   `percentile = (less + 0.5*equal) / knownWordCount` 使用。
 -- 两列必须同时写入：只写 rank 而让 equal_count 走默认 1，
 -- 会把 P60–P90 的词误判为高频（见 @woyao/core 的 frequency.ts 注释）。
+--
+-- 主键**不含 source_id**：读路径 `listFrequencyEntries(exam, corpusVersion)` 没有来源维度，
+-- 若把来源放进主键，同一 exam+version 下换一个来源重导就会留下两份、读回行数翻倍，
+-- 直接破坏“每词一行 == knownWordCount”的前提。一个 exam+version 只允许一份权威语料，
+-- 重导时按 (exam, corpus_version) 整体覆盖（见 wordRepository.writeFrequencyCorpus）。
 CREATE TABLE IF NOT EXISTS frequency_entries (
   word_id TEXT NOT NULL REFERENCES words (id) ON DELETE CASCADE,
   exam TEXT NOT NULL DEFAULT 'ALL',
@@ -257,9 +270,10 @@ CREATE TABLE IF NOT EXISTS frequency_entries (
   total_tokens INTEGER CHECK (total_tokens IS NULL OR total_tokens >= 0),
   rank INTEGER CHECK (rank IS NULL OR rank >= 1),
   equal_count INTEGER NOT NULL DEFAULT 1 CHECK (equal_count >= 1),
+  -- 当前生效语料的来源；重导时随主键行一起改写（它描述“这行是谁给的”，不是身份的一部分）。
   source_id TEXT NOT NULL REFERENCES sources (id),
-  created_at TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (word_id, exam, corpus_version, source_id)
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (word_id, exam, corpus_version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_frequency_corpus ON frequency_entries (corpus_version, exam);

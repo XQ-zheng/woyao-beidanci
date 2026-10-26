@@ -40,6 +40,7 @@ function indexNamesOf(db: SqliteDatabase): string[] {
 /** `better-sqlite3` 约束错误的 `code` 取值（比正则匹配 message 稳定得多）。 */
 type SqliteConstraintCode =
   | 'SQLITE_CONSTRAINT_UNIQUE'
+  | 'SQLITE_CONSTRAINT_PRIMARYKEY'
   | 'SQLITE_CONSTRAINT_CHECK'
   | 'SQLITE_CONSTRAINT_FOREIGNKEY'
   | 'SQLITE_CONSTRAINT_NOTNULL';
@@ -303,6 +304,62 @@ describe('migrate：建表与幂等', () => {
     const db = createMigratedDatabase();
 
     expect(columnsOf(db, 'settings')).toContain('deleted_at');
+  });
+
+  it('frequency_entries 主键不含 source_id：(word_id, exam, corpus_version) 唯一', () => {
+    const db = createMigratedDatabase();
+    db.prepare(
+      `INSERT INTO words (id, owner_scope, lemma, normalized_lemma, created_at, updated_at)
+       VALUES ('w1', 'LOCAL', 'abandon', 'abandon', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+    ).run();
+    for (const sourceId of ['src-a', 'src-b']) {
+      db.prepare(
+        `INSERT INTO sources (id, owner_scope, type, name, created_at, updated_at)
+         VALUES (?, 'LOCAL', 'FREQUENCY', ?, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+      ).run(sourceId, sourceId);
+    }
+
+    const pkColumns = (db.prepare('PRAGMA table_info(frequency_entries)').all() as {
+      name: string;
+      pk: number;
+    }[])
+      .filter((column) => column.pk > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map((column) => column.name);
+    expect(pkColumns).toEqual(['word_id', 'exam', 'corpus_version']);
+
+    const insert = db.prepare(
+      `INSERT INTO frequency_entries
+         (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
+       VALUES ('w1', 'CET4', 'v1', 100, 1000, 1, 1, ?)`,
+    );
+    insert.run('src-a');
+    // 同一 exam+version 只允许一份权威语料：换来源写第二行会被主键拦下（不是留下两份）。
+    expectSqliteConstraint(() => insert.run('src-b'), 'SQLITE_CONSTRAINT_PRIMARYKEY');
+  });
+
+  it('frequency_entries.created_at 默认为 SQLite 侧生成的 UTC ISO 时间', () => {
+    const db = createMigratedDatabase();
+    db.prepare(
+      `INSERT INTO words (id, owner_scope, lemma, normalized_lemma, created_at, updated_at)
+       VALUES ('w1', 'LOCAL', 'abandon', 'abandon', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sources (id, owner_scope, type, name, created_at, updated_at)
+       VALUES ('src1', 'LOCAL', 'FREQUENCY', 'NGSL', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z')`,
+    ).run();
+
+    db.prepare(
+      `INSERT INTO frequency_entries
+         (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
+       VALUES ('w1', 'CET4', 'v1', 100, 1000, 1, 1, 'src1')`,
+    ).run();
+
+    const row = db.prepare('SELECT created_at FROM frequency_entries').get() as {
+      created_at: string;
+    };
+    expect(row.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u);
+    expect(createSqlOf(db, 'frequency_entries')).toMatch(/created_at\s+TEXT\s+NOT NULL\s+DEFAULT\s*\(\s*strftime/i);
   });
 });
 

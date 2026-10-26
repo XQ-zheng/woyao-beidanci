@@ -262,6 +262,29 @@ describe('createWord：标准化与幂等', () => {
     expect(repo.listWordsByIds([ability.id, abandon.id]).map((w) => w.id)).toEqual([abandon.id]);
   });
 
+  it('listWordsByIds 跨批次（>500）仍保持入参顺序、缺失的跳过', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+    const first = repo.createWord(makeWordInput({ lemma: 'abandon' }));
+    const second = repo.createWord(makeWordInput({ lemma: 'ability' }));
+    const third = repo.createWord(makeWordInput({ lemma: 'absent' }));
+    // 498 个不存在的 id 把总量顶到 501，强制跨过一次 500 的分块边界。
+    const padding = Array.from({ length: 498 }, (_, index) => `missing-${index}`);
+    const ids = [third.id, ...padding, first.id, second.id];
+
+    expect(ids).toHaveLength(501);
+    expect(repo.listWordsByIds(ids).map((word) => word.id)).toEqual([
+      third.id,
+      first.id,
+      second.id,
+    ]);
+    // 重复 id 按入参重复出现（调用方可能用它对齐别处的数组）。
+    expect(repo.listWordsByIds([first.id, first.id]).map((word) => word.id)).toEqual([
+      first.id,
+      first.id,
+    ]);
+  });
+
   it('归属范围只允许 BUILTIN / LOCAL / acct:<id>（自创形态会让隔离形同虚设）', () => {
     const db = createDatabase();
     const repo = createWordRepository(db);
@@ -476,11 +499,14 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
       'TOTAL_MISMATCH',
     );
     expect(error.message).toMatch(/knownWordCount mismatch expected=5 actual=3/u);
+    // 这条同时守住“校验在事务外”：重导会先 DELETE 同一 (exam, version) 的旧行，
+    // 若把校验挪进事务、或退化成“先删后校验”，这里的旧语料就会被删掉。
     expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2').map((entry) => entry.wordId)).toEqual([
       'w-abandon',
       'w-ability',
       'w-absent',
     ]);
+    expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2').map((entry) => entry.rank)).toEqual([1, 2, 2]);
   });
 
   it('同一个词在一份语料里出现两次抛 DUPLICATE_WORD', () => {
@@ -548,6 +574,54 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
     ]);
     // 四份错误语料一行都不该落地（顺序无关，这里断言总量）。
     expect(repo.listFrequencyEntries('CET4', 'ngsl-1.2')).toEqual([]);
+  });
+
+  it('同一 exam+version 换来源重导只留一份语料（读回 2 行，来源是后导入的那个）', () => {
+    const db = createDatabase();
+    seedWords(db);
+    seedSource(db, 'src-other');
+    const repo = createWordRepository(db);
+
+    const twoWords = (sourceId: string): FrequencyCorpusInput =>
+      makeCorpus({
+        sourceId,
+        knownWordCount: 2,
+        entries: [
+          { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+          { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 1 },
+        ],
+      });
+
+    repo.writeFrequencyCorpus(twoWords('src-ngsl'));
+    repo.writeFrequencyCorpus(twoWords('src-other'));
+
+    const rows = repo.listFrequencyEntries('CET4', 'ngsl-1.2');
+
+    // 主键若含 source_id，这里会是 4 行（两个来源各一份），直接破坏“每词一行”的前提。
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.sourceId)).toEqual(['src-other', 'src-other']);
+  });
+
+  it('重导只按 (exam, corpus_version) 清旧行：换来源且新语料更短时旧词不残留', () => {
+    const db = createDatabase();
+    seedWords(db);
+    seedSource(db, 'src-other');
+    const repo = createWordRepository(db);
+    repo.writeFrequencyCorpus(makeCorpus());
+
+    // 新来源、只含 1 个词：若删除按 (exam, version, source) 过滤，w-ability / w-absent 会残留。
+    repo.writeFrequencyCorpus(
+      makeCorpus({
+        sourceId: 'src-other',
+        knownWordCount: 1,
+        entries: [{ wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 }],
+      }),
+    );
+
+    const rows = repo.listFrequencyEntries('CET4', 'ngsl-1.2');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.wordId).toBe('w-abandon');
+    expect(rows[0]?.sourceId).toBe('src-other');
   });
 
   it('totalTokens 可为 null（来源没给出统计口径时不写 0 冒充）', () => {
@@ -670,6 +744,57 @@ describe('appendEventAndUpdateState：幂等与原子性', () => {
   it('makeUserWordId 拼出稳定的 ${deckId}:${wordId}', () => {
     expect(makeUserWordId('deck-1', 'w-1')).toBe('deck-1:w-1');
     expect(() => makeUserWordId('', 'w-1')).toThrow(InvalidRepositoryInputError);
+  });
+
+  it('时间必须是 UTC ISO-8601 毫秒格式：偏移 / 无毫秒 / 本地写法一律拒绝并指出字段', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+
+    const cases: {
+      readonly field: string;
+      readonly event?: Partial<LearningEventRecord>;
+      readonly state?: Partial<LearningState>;
+    }[] = [
+      // 带时区偏移：字典序会把它排到同一时刻之后（`+08:00` 的 12:00 排 04:00Z 之后）。
+      { field: 'state.dueAt', state: { dueAt: '2025-06-30T12:00:00+08:00' } },
+      // 无毫秒：与带毫秒的值比较时长度不同，边界会错。
+      { field: 'answeredAt', event: { answeredAt: '2025-06-30T04:00:00Z' } },
+      // 本地/空格写法：既非 UTC 也不可比。
+      { field: 'state.lastReviewedAt', state: { lastReviewedAt: '2025-06-30 04:00:00' } },
+      // 只有日期：同样是“能 Date.parse 但不能比较”的形态。
+      { field: 'state.suppressedAt', state: { suppressedAt: '2025-06-30' } },
+    ];
+
+    for (const testCase of cases) {
+      try {
+        learning.appendEventAndUpdateState(makeEvent(testCase.event), makeState(testCase.state));
+        expect.unreachable(`应当拒绝 ${testCase.field}`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(InvalidRepositoryInputError);
+        if (error instanceof InvalidRepositoryInputError) {
+          expect(error.field).toBe(testCase.field);
+        }
+      }
+    }
+
+    // 四种写法一条都不许落库（校验在事务内失败也要整体回滚）。
+    expect(countRows(db, 'learning_events')).toBe(0);
+    expect(countRows(db, 'learning_state')).toBe(0);
+  });
+
+  it('标准 UTC 毫秒格式照常入库，listDue 的字符串比较能命中（含 == now 的边界）', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    const state = makeState({ dueAt: '2025-01-05T00:00:00.000Z' });
+
+    expect(learning.appendEventAndUpdateState(makeEvent(), state).applied).toBe(true);
+    expect(
+      learning.listDue('deck-1', new Date('2025-01-06T00:00:00.000Z')).map((item) => item.userWordId),
+    ).toEqual(['deck-1:w-1']);
+    // due_at <= now，恰好相等也算到期。
+    expect(learning.listDue('deck-1', new Date('2025-01-05T00:00:00.000Z'))).toHaveLength(1);
   });
 });
 

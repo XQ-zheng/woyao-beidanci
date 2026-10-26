@@ -580,16 +580,29 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       ORDER BY added_at ASC, word_id ASC`,
   );
   const upsertFrequencyEntry = db.prepare(
-    // `created_at` 由 SQLite 生成：语料导入的输入里没有注入时钟（见 brief §4.1），
-    // 而本包禁止 `new Date()`；重复导入时保留首次写入时间。
+    // `created_at` 交给列的 DEFAULT（`strftime(...)`）：语料导入的输入里没有注入时钟
+    // （见 brief §4.1），而本包禁止 `new Date()`。
+    // 冲突键是 (word_id, exam, corpus_version)——**不含 source**：一个 exam+version 只允许
+    // 一份权威语料，换来源重导时 `source_id` 被改写而不是新增一行。
     `INSERT INTO frequency_entries
-       (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-     ON CONFLICT (word_id, exam, corpus_version, source_id) DO UPDATE SET
+       (word_id, exam, corpus_version, frequency, total_tokens, rank, equal_count, source_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (word_id, exam, corpus_version) DO UPDATE SET
        frequency = excluded.frequency,
        total_tokens = excluded.total_tokens,
        rank = excluded.rank,
-       equal_count = excluded.equal_count`,
+       equal_count = excluded.equal_count,
+       source_id = excluded.source_id`,
+  );
+  /**
+   * 重导语料前清掉同一 (exam, corpus_version) 的旧行。
+   *
+   * 键里**不带 source**：主键已经不含来源，若删除还按来源过滤，那么“用新来源重导同一版本，
+   * 而新语料里没有某些旧词”时，那些旧词会原地残留，读回的行数就多于 knownWordCount，
+   * 把“每词一行”的前提悄悄破坏掉。
+   */
+  const deleteFrequencyCorpus = db.prepare(
+    'DELETE FROM frequency_entries WHERE exam = ? AND corpus_version = ?',
   );
   const selectFrequencyEntries = db.prepare(
     `SELECT word_id, frequency, rank, equal_count, corpus_version, source_id
@@ -597,6 +610,16 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       WHERE exam = ? AND corpus_version = ?
       ORDER BY rank ASC, word_id ASC`,
   );
+
+  /**
+   * `listWordsByIds` 的批量大小。
+   *
+   * 500 远低于 SQLite 的默认参数上限（32766），也远离单条 SQL 的编译成本拐点；
+   * 把「逐 id 一次查询」的 N 次往返压成 ceil(N/500) 次。语句按批次长度缓存，
+   * 避免同一批量每次调用都重新 prepare。
+   */
+  const ID_LOOKUP_BATCH = 500;
+  const wordByIdBatch = new Map<number, ReturnType<SqliteDatabase['prepare']>>();
 
   return {
     createWord(input: WordInput): WordRecord {
@@ -707,18 +730,32 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       if (!Array.isArray(ids)) {
         throw new InvalidRepositoryInputError('ids', 'ids 必须是数组');
       }
-      const records: WordRecord[] = [];
-      for (const id of ids) {
-        if (typeof id !== 'string' || id.trim() === '') {
-          continue;
-        }
-        const row = selectWordById.get(id) as WordRow | undefined;
-        if (row === undefined || row.deleted_at !== null) {
-          continue;
-        }
-        records.push(toWordRecord(row));
+      const requested = ids.filter((id) => typeof id === 'string' && id.trim() !== '');
+      if (requested.length === 0) {
+        return [];
       }
-      return records;
+      const uniqueIds = [...new Set(requested)];
+      const found = new Map<string, WordRecord>();
+      for (let offset = 0; offset < uniqueIds.length; offset += ID_LOOKUP_BATCH) {
+        const chunk = uniqueIds.slice(offset, offset + ID_LOOKUP_BATCH);
+        let statement = wordByIdBatch.get(chunk.length);
+        if (statement === undefined) {
+          const placeholders = chunk.map(() => '?').join(', ');
+          statement = db.prepare(
+            `SELECT ${WORD_COLUMNS} FROM words WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
+          );
+          wordByIdBatch.set(chunk.length, statement);
+        }
+        // `better-sqlite3` 支持把“参数数组”整体传入（按位置绑定），正好对应 IN 占位符。
+        const rows = statement.all(chunk) as WordRow[];
+        for (const row of rows) {
+          found.set(row.id, toWordRecord(row));
+        }
+      }
+      // 顺序由入参决定（重复 id 就重复出现），查询只负责提供内容。
+      return requested
+        .map((id) => found.get(id))
+        .filter((record): record is WordRecord => record !== undefined);
     },
 
     listSenses(wordId: string): WordSenseRecord[] {
@@ -851,12 +888,15 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
         }
       }
 
-      // 先做纯校验（不碰库），再进事务写入：任一失配都不留半份语料。
+      // 校验必须留在事务**外**：先删后校验一旦校验失败，旧语料已经被删掉了。
       assertFrequencyCorpusConsistent(entries, input.knownWordCount);
 
       runInTransaction(
         db,
         () => {
+          // 重导 = 整体覆盖：先清掉同一 (exam, corpus_version) 的旧行，再写新行。
+          // 两者同事务，因此“删了但没写进去”不会发生。
+          deleteFrequencyCorpus.run(exam, corpusVersion);
           for (const entry of entries) {
             upsertFrequencyEntry.run(
               entry.wordId,

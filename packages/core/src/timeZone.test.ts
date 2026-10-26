@@ -72,6 +72,17 @@ describe('isValidTimeZone', () => {
     expect(isValidTimeZone('-0530')).toBe(false);
   });
 
+  it('拒绝 UTC/GMT 前缀的偏移写法（同一类“没有 DST 规则”的伪时区）', () => {
+    expect(isValidTimeZone('UTC+8')).toBe(false);
+    expect(isValidTimeZone('UTC+08:00')).toBe(false);
+    expect(isValidTimeZone('GMT-0500')).toBe(false);
+    // 真正的 IANA 名称必须继续合法，别把 Etc/GMT+5 这类带符号的合法名一起拒掉。
+    expect(isValidTimeZone('UTC')).toBe(true);
+    expect(isValidTimeZone('GMT')).toBe(true);
+    expect(isValidTimeZone('Etc/UTC')).toBe(true);
+    expect(isValidTimeZone('Etc/GMT+5')).toBe(true);
+  });
+
   it('计划时区为纯偏移写法时校验失败并指出字段', () => {
     const result = validateReviewPlan(createDefaultReviewPlan('+08:00'));
 

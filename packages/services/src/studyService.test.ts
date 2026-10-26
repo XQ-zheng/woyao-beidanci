@@ -1,4 +1,5 @@
-import { ClockSkewError, STAGE_NEVER_REVIEWED } from '@woyao/core';
+import { ClockSkewError, STAGE_NEVER_REVIEWED, displayAnswerOf, type WordWithSenses } from '@woyao/core';
+import { makeUserWordId } from '@woyao/data';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +8,7 @@ import {
   createReportService,
   createSettingsService,
   createStudyService,
+  wordIdFromUserWordId,
   type ReportService,
   type SettingsService,
   type StudyService,
@@ -201,6 +203,56 @@ describe('studyService：开始会话', () => {
     expect(row.review_count).toBe(0);
     expect(row.device_id).toBe(harness.deviceId);
     expect(JSON.parse(row.plan_snapshot_json)).toMatchObject({ dailyNewLimit: 2, dailyReviewLimit: 1 });
+  });
+
+  it('跨层锁定：卡片.answer 与 core.displayAnswerOf 对同一词/义项/方向逐字节一致', async () => {
+    const { harness, settings, study } = makeEnv();
+    // 多义项词（首义项带首尾空白，验证 trim 是 core 的职责）；单义项词。
+    harness.seedWord({
+      id: 'multi',
+      lemma: 'Abandon',
+      senses: [
+        { pos: 'v.', simpleZh: ' 放弃 ' },
+        { pos: 'n.', simpleZh: '放任' },
+      ],
+    });
+    harness.seedWord({
+      id: 'single',
+      lemma: 'Ability',
+      senses: [{ pos: 'n.', simpleZh: '能力' }],
+    });
+    harness.seedDeck({ id: 'deck-1', name: '词库', wordIds: ['multi', 'single'] });
+
+    const assertAnswerMatchesCore = (
+      card: { wordId: string; lemma: string; answer: string },
+      mode: 'EN_TO_ZH' | 'ZH_TO_EN',
+      senses: { pos: string; simpleZh: string }[],
+    ): void => {
+      const bundle: WordWithSenses = {
+        wordId: card.wordId,
+        lemma: card.lemma,
+        pos: senses[0]?.pos ?? '',
+        senses: senses.map((sense) => sense.simpleZh),
+      };
+      expect(card.answer).toBe(displayAnswerOf(bundle, mode));
+    };
+
+    // EN_TO_ZH，多义项：判卷答案取第一个非空义项（trim 由 core 做）。
+    const enSession = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+    const multiCard = enSession.cards.find((card) => card.wordId === 'multi');
+    expect(multiCard?.mode).toBe('EN_TO_ZH');
+    expect(multiCard?.answer).toBe('放弃');
+    assertAnswerMatchesCore(multiCard!, 'EN_TO_ZH', [
+      { pos: 'v.', simpleZh: ' 放弃 ' },
+      { pos: 'n.', simpleZh: '放任' },
+    ]);
+
+    // ZH_TO_EN，单义项：判卷答案取词形（trim 由 core 做）。
+    await settings.update({ trainingMode: 'ZH_TO_EN' });
+    const zhSession = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+    const singleCard = zhSession.cards.find((card) => card.wordId === 'single');
+    expect(singleCard?.mode).toBe('ZH_TO_EN');
+    assertAnswerMatchesCore(singleCard!, 'ZH_TO_EN', [{ pos: 'n.', simpleZh: '能力' }]);
   });
 });
 
@@ -641,5 +693,16 @@ describe('studyService：此单词不再出现', () => {
       study.restoreWord({ deckId, wordId: 'w-1', now: new Date(NOW_ISO) }),
     ).resolves.toBeUndefined();
     expect(harness.sync.learning.getState('deck-1:w-1')).toBeNull();
+  });
+});
+
+describe('studyService：userWordId 前缀剥离', () => {
+  it('deckId 含冒号（如 acct:u1）时仍能按前缀正确剥回 wordId', () => {
+    const userWordId = makeUserWordId('acct:u1', 'w1');
+    expect(userWordId).toBe('acct:u1:w1');
+    // 必须按“已知 deckId 的前缀”剥离，而不是按第一个冒号切——前者才对含冒号的 deckId 无歧义。
+    expect(wordIdFromUserWordId('acct:u1', 'acct:u1:w1')).toBe('w1');
+    // 普通 id 也回归一遍，防前缀逻辑只对“含冒号”这个特例生效。
+    expect(wordIdFromUserWordId('deck-1', 'deck-1:w-1')).toBe('w-1');
   });
 });

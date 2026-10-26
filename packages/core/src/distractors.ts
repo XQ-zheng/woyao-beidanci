@@ -161,11 +161,15 @@ function sharesAnySense(left: ReadonlySet<string>, right: ReadonlySet<string>): 
 /**
  * 取目标/候选在该模式下的展示答案。
  *
+ * 这是“判卷答案口径”的唯一权威：`generateDistractors` 用它挑选项里的正确答案，
+ * 服务层的 `studyService` 也直接 import 它来给出 `CardView.answer` / `AnswerResult.correctAnswer`。
+ * **两处必须用同一个函数**，否则“选项里的正确答案”与“判卷用的答案”会悄悄错位。
+ *
  * @param word 词条。
  * @param mode 生效模式（不含 `MIXED`）。
  * @returns 展示答案，缺失时返回空字符串。
  */
-function displayAnswerOf(word: WordWithSenses, mode: 'EN_TO_ZH' | 'ZH_TO_EN'): string {
+export function displayAnswerOf(word: WordWithSenses, mode: 'EN_TO_ZH' | 'ZH_TO_EN'): string {
   if (mode === 'EN_TO_ZH') {
     const senses = Array.isArray(word.senses) ? word.senses : [];
     const firstSense = senses.find((sense) => typeof sense === 'string' && sense.trim() !== '');

@@ -24,6 +24,7 @@ import {
   STAGE_NEVER_REVIEWED,
   buildDailyQueue,
   createInitialLearningState,
+  displayAnswerOf,
   generateDistractors,
   nextLearningState,
   resolveDistractorMode,
@@ -211,27 +212,22 @@ export const CUMULATIVE_WRONG_PROMPT_THRESHOLD = 2;
 const DEFAULT_OWNER_SCOPE = LOCAL_OWNER_SCOPE;
 
 /**
- * 取一张卡片的“展示答案”。
+ * 把词条 + 义项投影成 core 的 `WordWithSenses`。
  *
- * 口径与 core 的 `generateDistractors` 完全一致（它内部用同一规则挑正确答案）：
- * `EN_TO_ZH` 取第一个非空义项简解，`ZH_TO_EN` 取词形。两处若不一致，
- * 就会出现“选项里的正确答案”与“判卷用的答案”不是同一个字符串。
- *
- * @param lemma 词形。
- * @param senses 义项（已按 `senseNo` 升序）。
- * @param mode 已解析的方向。
- * @returns 答案文本（可能为空串）。
+ * 只做类型/字段投影，**不含任何答案规则**：判卷答案一律走 core 的 `displayAnswerOf`
+ * （与 `generateDistractors` 挑选项里的正确答案是同一个函数）。这里绝不能自己实现
+ * “EN_TO_ZH 取第一个非空义项、ZH_TO_EN 取词形”——那会让两处口径静默分叉。
  */
-function displayAnswerOf(
-  lemma: string,
+function toWordWithSenses(
+  word: { id: string; lemma: string },
   senses: readonly SenseView[],
-  mode: 'EN_TO_ZH' | 'ZH_TO_EN',
-): string {
-  if (mode === 'ZH_TO_EN') {
-    return lemma.trim();
-  }
-  const first = senses.find((sense) => sense.simpleZh.trim() !== '');
-  return first === undefined ? '' : first.simpleZh.trim();
+): WordWithSenses {
+  return {
+    wordId: word.id,
+    lemma: word.lemma,
+    pos: senses[0]?.pos ?? '',
+    senses: senses.map((sense) => sense.simpleZh),
+  };
 }
 
 /**
@@ -348,19 +344,15 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
     // `MIXED` 在这里解析成具体方向：卡片必须明确“问的是英译中还是中译英”，
     // 同一 (seed, wordId) 永远得到同一方向，因此重开会话也能复现同一套题。
     const mode = resolveDistractorMode(input.trainingMode, input.seed, word.id);
-    const answer = displayAnswerOf(word.lemma, senses, mode);
+    const bundle = toWordWithSenses(word, senses);
+    // 判卷答案直接来自 core：与 `generateDistractors` 里选项的正确答案是同一个函数。
+    const answer = displayAnswerOf(bundle, mode);
     const prompt = mode === 'EN_TO_ZH' ? word.lemma : promptOfZhToEn(senses);
 
     let options: string[] = [];
     if (input.questionStyle === 'CHOICE') {
-      const target: WordWithSenses = {
-        wordId: word.id,
-        lemma: word.lemma,
-        pos: senses[0]?.pos ?? '',
-        senses: senses.map((sense) => sense.simpleZh),
-      };
       const distractors = generateDistractors(
-        target,
+        bundle,
         input.candidates ?? [],
         input.trainingMode,
         input.seed,
@@ -432,24 +424,11 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       const unseenWordIds = deckWordIds.filter((wordId) => !stateByWordId.has(wordId));
 
       // 队列完全交给 core：排序、上限截断、屏蔽词过滤、确定性交错都在里面。
+      // `newCount`/`reviewCount` 在卡片组装之前就已确定（取队列长度），不受后续组装/重排影响。
       const queue = buildDailyQueue(states, unseenWordIds, plan, validated.now, seed);
 
-      const sessionId = context.ids.nextId();
-      await context.repos.learning.upsertSession({
-        sessionId,
-        deckId: validated.deckId,
-        startedAt: toIsoInstant(validated.now),
-        endedAt: null,
-        localDate,
-        timeZone: plan.timeZone,
-        newCount: queue.newWordIds.length,
-        reviewCount: queue.reviewWordIds.length,
-        activeDurationMs: 0,
-        planSnapshotJson: JSON.stringify(plan),
-        deviceId: context.device.deviceId(),
-        revision: 0,
-      });
-
+      // 先组装卡片、后写会话行：卡片组装不依赖 `sessionId`，把“可能抛错的读组装”放到
+      // 写库之前，避免组装中途失败留下一条永远空的会话行（那会被会话列表当成一次“0 作答”的历史）。
       const frequencyLookup =
         validated.exam !== undefined && validated.corpusVersion !== undefined
           ? await loadFrequencyLookup(context.repos.words, validated.exam, validated.corpusVersion)
@@ -474,6 +453,22 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           cards.push(card);
         }
       }
+
+      const sessionId = context.ids.nextId();
+      await context.repos.learning.upsertSession({
+        sessionId,
+        deckId: validated.deckId,
+        startedAt: toIsoInstant(validated.now),
+        endedAt: null,
+        localDate,
+        timeZone: plan.timeZone,
+        newCount: queue.newWordIds.length,
+        reviewCount: queue.reviewWordIds.length,
+        activeDurationMs: 0,
+        planSnapshotJson: JSON.stringify(plan),
+        deviceId: context.device.deviceId(),
+        revision: 0,
+      });
 
       return {
         sessionId,
@@ -571,11 +566,11 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
         throw new ServiceNotFoundError('learningState', userWordId);
       }
 
-      // 正确答案按作答方向给出：中译英是词形，英译中取第一个非空义项简解。
+      // 正确答案按作答方向给出，口径来自 core 的 displayAnswerOf。
       const word = await context.repos.words.getWordById(validated.wordId);
       const senses = word === null ? [] : await loadSenses(word.id);
       const correctAnswer =
-        word === null ? '' : displayAnswerOf(word.lemma, senses, mode);
+        word === null ? '' : displayAnswerOf(toWordWithSenses(word, senses), mode);
 
       const frequencyLookup =
         validated.exam !== undefined && validated.corpusVersion !== undefined

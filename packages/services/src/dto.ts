@@ -435,3 +435,62 @@ export function toLocalDateString(instant: Date, timeZone: string): string {
   const day = String(parts.day).padStart(2, '0');
   return `${String(parts.year)}-${month}-${day}`;
 }
+
+/** 图词联想类型。 */
+export const associationKindSchema = z.enum(['MEANING', 'HOMOPHONE', 'PICTOGRAPH']);
+
+/** 查询一个词的内容入参。 */
+export const contentWordInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+});
+
+/** 查询发音入参。 */
+export const pronunciationInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  accent: accentSchema,
+});
+
+/** 列出某词联想入参。 */
+export const listAssociationsInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+});
+
+/** 新增一条联想入参。 */
+export const addAssociationInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  kind: associationKindSchema,
+  text: z.string().trim().min(1, '联想文本不能为空'),
+  originUrl: z.string().min(1, '来源地址不能为空').nullish(),
+});
+
+/** 删除一条联想入参。 */
+export const removeAssociationInputSchema = z.strictObject({
+  id: z.string().min(1, '联想 id 不能为空'),
+});
+
+/** 在线补联想入参。 */
+export const enrichAssociationInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  kind: associationKindSchema,
+});
+
+/** 在线词典查询入参。 */
+export const dictionaryLookupInputSchema = z.strictObject({
+  lemma: z.string().trim().min(1, '词形不能为空'),
+});
+
+/** 翻译入参。 */
+export const translateInputSchema = z.strictObject({
+  text: z.string().trim().min(1, '待翻译文本不能为空'),
+  target: z.enum(['zh', 'en']),
+});
+
+/** 在线联想查询入参。 */
+export const onlineAssociationsInputSchema = z.strictObject({
+  lemma: z.string().trim().min(1, '词形不能为空'),
+  kind: associationKindSchema,
+});
+
+/** `AssociationKind` 的运行时品牌，便于服务层 import 类型而不用值。 */
+export type { AssociationKind } from '@woyao/data';
+

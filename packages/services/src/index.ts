@@ -12,11 +12,15 @@
  * 5C 会补内容、云同步、认证与导出服务；它们共用本文件导出的 `ServiceContext` 与错误类型。
  */
 
+export * from './associationService';
+export * from './contentService';
 export * from './dto';
 export * from './errors';
 export * from './frequencyView';
 export * from './libraryService';
+export * from './onlineService';
 export * from './ports';
 export * from './reportService';
 export * from './settingsService';
+export * from './sourceBootstrap';
 export * from './studyService';

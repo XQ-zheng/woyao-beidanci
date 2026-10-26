@@ -91,6 +91,17 @@ export function asyncifyRepositories(input: SyncRepositories): AsyncRepositories
   };
 }
 
+/**
+ * 把任意同步仓储包成异步视图（供 `associationRepository` / `contentCacheRepository`
+ * 这两个**没有进入 `AsyncRepositories`** 的仓储使用）。
+ *
+ * @param source 同步仓储。
+ * @returns 只含同名异步方法的对象。
+ */
+export function asyncify<T extends object>(source: T): Asyncify<T> {
+  return asyncifyMethods(source);
+}
+
 /** id 生成端口（外壳注入：桌面用 uuid，移动端可换成设备侧实现）。 */
 export interface IdGeneratorPort {
   nextId(): string;
@@ -111,6 +122,41 @@ export interface DeviceInfoPort {
   deviceId(): string;
 }
 
+/**
+ * HTTP 端口（外壳注入）。
+ *
+ * 服务层**禁止 `fetch`/`node:*`**：网络能力由外壳（Electron 主进程 / WebView 桥）提供。
+ * 只暴露 `getJson`/`getText` 两种最小形态，够词典/翻译/联想用即可。
+ * **隐私红线**：调用方只传用户主动查的那一个词的 URL，绝不在 headers 里夹带 token/历史。
+ */
+export interface HttpPort {
+  getJson(input: {
+    url: string;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+  }): Promise<{ status: number; data: unknown }>;
+  getText(input: {
+    url: string;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+  }): Promise<{ status: number; body: string }>;
+}
+
+/**
+ * LLM 端口（外壳注入）。
+ *
+ * 只用于“翻译”这一类**明确标 AI 生成**的能力；结果不写进词典义项。
+ * 未配置（`null`/未提供实现）时，服务层抛 `NotConfiguredError('llm')`。
+ */
+export interface LlmPort {
+  translate(input: { text: string; target: 'zh' | 'en' }): Promise<string>;
+}
+
+/** 网络可达性端口（外壳注入，决定降级路径是否走在线）。 */
+export interface NetworkMonitorPort {
+  isOnline(): boolean;
+}
+
 /** 服务运行上下文：所有服务共享这一份依赖。 */
 export interface ServiceContext {
   readonly repos: AsyncRepositories;
@@ -118,4 +164,15 @@ export interface ServiceContext {
   readonly ids: IdGeneratorPort;
   readonly device: DeviceInfoPort;
   readonly log: LoggerPort;
+  /** 在线词典/翻译/联想的网络能力（服务层不直接 fetch）。 */
+  readonly http: HttpPort;
+  /**
+   * AI 翻译能力。
+   *
+   * **可选**：外壳没接 LLM 时留 `undefined`，服务层据此抛 `NotConfiguredError('llm')`
+   * 而不是假装能翻译。
+   */
+  readonly llm?: LlmPort;
+  /** 网络可达性；离线时服务层走降级路径。 */
+  readonly network: NetworkMonitorPort;
 }

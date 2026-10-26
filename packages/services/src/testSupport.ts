@@ -12,12 +12,16 @@
 import { createFixedClock, parseIsoInstant } from '@woyao/core';
 import {
   closeDatabase,
+  createAssociationRepository,
+  createContentCacheRepository,
   createLearningRepository,
   createSettingsRepository,
   createSyncRepository,
   createWordRepository,
   migrate,
   openDatabase,
+  type AssociationRepository,
+  type ContentCacheRepository,
   type DeckKind,
   type SqliteDatabase,
   type SyncRepository,
@@ -26,7 +30,13 @@ import {
   type WordRepository,
 } from '@woyao/data';
 
-import { asyncifyRepositories, type ServiceContext } from './ports';
+import {
+  asyncifyRepositories,
+  type HttpPort,
+  type LlmPort,
+  type NetworkMonitorPort,
+  type ServiceContext,
+} from './ports';
 
 /** 默认定时钟点（任何固定值都行，只要不是“读系统时间”）。 */
 const DEFAULT_NOW = '2025-03-01T08:00:00.000Z';
@@ -44,6 +54,8 @@ export interface ServiceTestHarness {
     readonly learning: LearningRepository;
     readonly sync: SyncRepository;
     readonly settings: SettingsRepository;
+    readonly associations: AssociationRepository;
+    readonly contentCache: ContentCacheRepository;
   };
   /** 服务上下文（异步仓储 + 时钟 + id + 设备号）。 */
   readonly context: ServiceContext;
@@ -86,6 +98,12 @@ export interface ServiceTestHarnessOptions {
   readonly now?: string;
   /** 注入的设备号。 */
   readonly deviceId?: string;
+  /** 注入的 HTTP 端口（缺省：一律 404 的假实现，禁止真实联网）。 */
+  readonly http?: HttpPort;
+  /** 注入的 LLM 端口（缺省：未配置 `undefined`）。 */
+  readonly llm?: LlmPort;
+  /** 注入的网络可达性（缺省：在线）。 */
+  readonly network?: NetworkMonitorPort;
 }
 
 /**
@@ -105,6 +123,8 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
     learning: createLearningRepository(db),
     sync: createSyncRepository(db),
     settings: createSettingsRepository(db),
+    associations: createAssociationRepository(db),
+    contentCache: createContentCacheRepository(db),
   } as const;
 
   let idCounter = 0;
@@ -124,6 +144,16 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
       warn: (): void => {
         // 测试里默认静默；需要断言告警时在用例里替换 `context.log`。
       },
+    },
+    // 默认假端口：任何测试要在线内容都必须显式注入，绝不能真实联网。
+    http: options.http ?? {
+      getJson: async (): Promise<{ status: number; data: unknown }> => ({ status: 404, data: null }),
+      getText: async (): Promise<{ status: number; body: string }> => ({ status: 404, body: '' }),
+    },
+    // 未配置 LLM（`translate` 会抛 NotConfiguredError）。
+    llm: options.llm,
+    network: options.network ?? {
+      isOnline: (): boolean => true,
     },
   };
 

@@ -11,7 +11,12 @@
  */
 
 /** 服务层稳定错误码。 */
-export type ServiceErrorCode = 'VALIDATION_FAILED' | 'NOT_FOUND' | 'CONFLICT' | 'NOT_CONFIGURED';
+export type ServiceErrorCode =
+  | 'VALIDATION_FAILED'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'NOT_CONFIGURED'
+  | 'PROVIDER_ERROR';
 
 /** 一条校验问题（与 zod 的 `issues` 同构，但只保留上层需要展示的字段）。 */
 export interface ServiceValidationIssue {
@@ -113,5 +118,26 @@ export class NotConfiguredError extends ServiceError {
   constructor(feature: string, message: string) {
     super('NOT_CONFIGURED', message);
     this.feature = feature;
+  }
+}
+
+/**
+ * 外部内容 provider 失败（网络错误、超时、非 2xx、响应畸形等）。
+ *
+ * 与 `NotConfiguredError` 的区别：provider **已配置但请求失败**。UI 可据此
+ * 提示“当前词典服务不可用”，而不是把它当成“用户没配好”。`provider` 是稳定名
+ * （例如 `dictionaryapi` / `llm` / `association`），上层按它展示具体是哪家挂了。
+ */
+export class ProviderError extends ServiceError {
+  /** 出错的 provider 名。 */
+  readonly provider: string;
+
+  /**
+   * @param provider provider 名。
+   * @param message 面向开发者的说明。
+   */
+  constructor(provider: string, message: string) {
+    super('PROVIDER_ERROR', message);
+    this.provider = provider;
   }
 }

@@ -21,7 +21,6 @@ import {
 import {
   LOCAL_USER_SOURCE_ID,
   NOTEBOOK_DECK_NAME,
-  USER_SOURCE_NAME,
   createDeckInputSchema,
   createWordInputSchema,
   getFrequencyInputSchema,
@@ -37,6 +36,7 @@ import {
 import { ServiceConflictError, ServiceNotFoundError, ServiceValidationError } from './errors';
 import { loadFrequencyLookup, toFrequencyView, type FrequencyLookup } from './frequencyView';
 import type { ServiceContext } from './ports';
+import { ensureUserSource as ensureLocalUserSource } from './sourceBootstrap';
 
 /** 词库服务契约。 */
 export interface LibraryService {
@@ -168,28 +168,16 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
   }
 
   /**
-   * 确保“本地自建内容来源”存在。
+   * 确保“本地自建内容来源”存在（实现见 `sourceBootstrap.ts`，与 `associationService` 共用）。
    *
    * 为什么必须在**写词之前**做：`word_senses.source_id` 有外键，来源表在 5A 之前
    * 一个写入口都没有，于是自建词的义项只能靠外键失败兜底——那等于“自建词库不可用”。
-   * 现在每次自建词都先 upsert 一次（数据层对内容一致的行**不写、不推 revision**，
-   * 所以重复调用没有副作用，也不会让同步侧看到无穷无尽的“来源变了”）。
-   *
-   * 归属范围跟词条一致：登录用户的自建内容挂在 `acct:<id>` 名下，不串到 `LOCAL`。
+   * upsert 对内容一致的行**不写、不推 revision**，重复调用无副作用。
    *
    * @param sourceId 目标来源 id。
    */
   async function ensureUserSource(sourceId: string): Promise<void> {
-    await context.repos.words.upsertSource({
-      id: sourceId,
-      ownerScope,
-      type: 'USER',
-      name: USER_SOURCE_NAME,
-      // 用户自建内容不允许随应用再分发（需求要求逐项核验许可，默认必须是最保守的那个）。
-      redistributionAllowed: false,
-      deviceId: context.device.deviceId(),
-      now: context.clock.now(),
-    });
+    await ensureLocalUserSource(context, ownerScope, sourceId);
   }
 
   /**

@@ -21,6 +21,7 @@ function makeEvent(overrides: Partial<LearningEventRecord> = {}): LearningEventR
     recognition: 'KNOWN',
     stageBefore: -1,
     stageAfter: 0,
+    dueAt: null,
     answeredAt: '2025-03-01T08:00:00.000Z',
     localDate: '2025-03-01',
     timeZone: 'Asia/Shanghai',

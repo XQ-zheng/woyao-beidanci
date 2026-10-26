@@ -137,7 +137,13 @@ export function createReportService(options: ReportServiceOptions): ReportServic
    * @returns 评估事件数组。
    */
   function toAssessmentEvents(
-    events: readonly { userWordId: string; isCorrect: boolean; recognition: 'KNOWN' | 'UNKNOWN'; answeredAt: string }[],
+    events: readonly {
+      userWordId: string;
+      isCorrect: boolean;
+      recognition: 'KNOWN' | 'UNKNOWN';
+      answeredAt: string;
+      dueAt: string | null;
+    }[],
     deckId: string,
   ): AssessmentEvent[] {
     return events.map((event) => ({
@@ -145,6 +151,8 @@ export function createReportService(options: ReportServiceOptions): ReportServic
       isCorrect: event.isCorrect,
       recognition: event.recognition,
       answeredAt: event.answeredAt,
+      // core 的 `AssessmentEvent.dueAt` 是可选字段；新词首答为 null → 用 undefined 表示“无样本”。
+      dueAt: event.dueAt ?? undefined,
     }));
   }
 

@@ -45,6 +45,13 @@ export interface LearningEventRecord {
   readonly stageBefore: number;
   /** 作答后阶段。 */
   readonly stageAfter: number;
+  /**
+   * 本次作答所履行的到期时间（UTC ISO 8601 毫秒）。
+   *
+   * 复习作答 = 作答前 `learning_state.dueAt`；新词首答（`stageBefore === STAGE_NEVER_REVIEWED`）
+   * 没有“到期”概念，为 `null`。评估的 M 项（到期复习 48h 内答对率）只统计非 null 的事件。
+   */
+  readonly dueAt: string | null;
   /** 作答时间（UTC ISO-8601）。 */
   readonly answeredAt: string;
   /** 按用户时区折算的本地日 `YYYY-MM-DD`。 */
@@ -229,6 +236,7 @@ interface LearningEventRow {
   recognition: Recognition;
   stage_before: number;
   stage_after: number;
+  due_at: string | null;
   answered_at: string;
   local_date: string;
   time_zone: string;
@@ -268,6 +276,7 @@ function toEventRecord(row: LearningEventRow): LearningEventRecord {
     recognition: row.recognition,
     stageBefore: row.stage_before,
     stageAfter: row.stage_after,
+    dueAt: row.due_at,
     answeredAt: row.answered_at,
     localDate: row.local_date,
     timeZone: row.time_zone,
@@ -408,6 +417,11 @@ function assertValidEvent(event: LearningEventRecord): void {
   if (!Number.isInteger(event.stageBefore) || !Number.isInteger(event.stageAfter)) {
     throw new InvalidRepositoryInputError('stageAfter', 'stageBefore/stageAfter 必须是整数');
   }
+  if (event.dueAt !== null) {
+    // 复习事件的 dueAt 是“本次作答所履行的到期时间”，评估会拿它和 answered_at 做
+    // 毫秒差与字典序比较，格式必须与 answered_at 同一条严格校验，否则脏行会污染 M 样本。
+    requireIsoInstant(event.dueAt, 'dueAt');
+  }
   requireIsoInstant(event.answeredAt, 'answeredAt');
   requireLocalDate(event.localDate, 'localDate');
   requireNonEmptyString(event.timeZone, 'timeZone');
@@ -475,9 +489,9 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
   const insertEvent = db.prepare(
     `INSERT INTO learning_events
        (event_id, user_word_id, deck_id, word_id, session_id, mode, prompt, answer, is_correct,
-        recognition, stage_before, stage_after, answered_at, local_date, time_zone, duration_ms,
+        recognition, stage_before, stage_after, due_at, answered_at, local_date, time_zone, duration_ms,
         device_id, synced_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   );
   const STATE_COLUMNS = `user_word_id, deck_id, word_id, stage, due_at, last_reviewed_at, correct_count,
                          wrong_count, streak_correct, weight, suppressed_at`;
@@ -565,7 +579,7 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       ORDER BY local_date ASC`,
   );
   const EVENT_COLUMNS = `event_id, user_word_id, session_id, mode, prompt, answer, is_correct,
-                         recognition, stage_before, stage_after, answered_at, local_date, time_zone,
+                         recognition, stage_before, stage_after, due_at, answered_at, local_date, time_zone,
                          duration_ms, device_id, synced_at`;
   // 排序带 `event_id` 兜底：同一毫秒内的两条事件（批量导入/回放）也要有稳定次序，
   // 否则 `finishSession` 的汇总在不同机器上可能得到不同的“最后一条”。
@@ -648,6 +662,7 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
             event.recognition,
             event.stageBefore,
             event.stageAfter,
+            event.dueAt,
             event.answeredAt,
             event.localDate,
             event.timeZone,

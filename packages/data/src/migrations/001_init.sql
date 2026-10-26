@@ -169,6 +169,10 @@ CREATE TABLE IF NOT EXISTS learning_events (
   recognition TEXT NOT NULL CHECK (recognition IN ('KNOWN', 'UNKNOWN')),
   stage_before INTEGER,
   stage_after INTEGER,
+  -- 复习事件记录本次作答所履行的到期时间；新词首答为 NULL。
+  -- 它是评估 M 项（到期复习 48h 内答对率）的样本来源：core 按
+  -- `answered_at >= due_at && answered_at - due_at <= 48h` 过滤，这里不重复过滤。
+  due_at TEXT,
   answered_at TEXT NOT NULL,
   local_date TEXT NOT NULL,
   time_zone TEXT NOT NULL,

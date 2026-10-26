@@ -548,6 +548,9 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           recognition: validated.recognition,
           stageBefore: baseState.stage,
           stageAfter: next.stage,
+          // 复习作答记“本次作答所履行的到期时间”；新词首答（stage === -1）没有到期概念，记 null。
+          // 评估的 M 项靠它算“到期后 48h 内是否答对”，此处不给值 M 就会永远缺样本。
+          dueAt: baseState.stage === STAGE_NEVER_REVIEWED ? null : baseState.dueAt,
           answeredAt: answeredAtIso,
           localDate: toLocalDateString(validated.answeredAt, plan.timeZone),
           timeZone: plan.timeZone,

@@ -1,4 +1,4 @@
-import { ASSESSMENT_ALGORITHM_VERSION, ASSESSMENT_WINDOW_DAYS, MS_PER_DAY } from '@woyao/core';
+import { ASSESSMENT_ALGORITHM_VERSION, ASSESSMENT_WINDOW_DAYS, MS_PER_DAY, type LearningState } from '@woyao/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -137,6 +137,70 @@ describe('reportService：水平评估', () => {
         now: Date;
       }),
     ).rejects.toBeInstanceOf(ServiceValidationError);
+  });
+
+  it('D-05（端到端）：复习事件带 dueAt 且到期后 48h 内答对时，不再出现“复习样本不足”', async () => {
+    const { harness, study, report } = makeEnv();
+    seedDeck(harness, 2);
+    const session = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+
+    // 直接把 w-1 的学习状态设成“已到期、已进入复习阶段”：
+    // 到期时刻 02-28 09:00，作答时刻 03-01 08:00 —— 恰好晚 23h，落在 48h 窗口内。
+    const dueAt = '2025-02-28T09:00:00.000Z';
+    const reviewState: LearningState = {
+      userWordId: 'deck-1:w-1',
+      deckId: 'deck-1',
+      wordId: 'w-1',
+      stage: 0,
+      dueAt,
+      lastReviewedAt: '2025-02-27T09:00:00.000Z',
+      correctCount: 0,
+      wrongCount: 0,
+      streakCorrect: 0,
+      weight: 1,
+      suppressedAt: null,
+    };
+    harness.sync.learning.updateState(reviewState, harness.deviceId, new Date(NOW_ISO));
+
+    await study.submitAnswer({
+      sessionId: session.sessionId,
+      deckId: 'deck-1',
+      wordId: 'w-1',
+      mode: 'EN_TO_ZH',
+      prompt: 'x',
+      answer: 'y',
+      isCorrect: true,
+      recognition: 'KNOWN',
+      answeredAt: new Date('2025-03-01T08:00:00.000Z'),
+    });
+
+    const view = await report.getAssessment({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+
+    // 事件里有了 dueAt 样本，core 就真的算出 M，不再补那句“M 按中性值计算”的说明。
+    expect(view.suggestions.join('')).not.toContain('复习样本不足');
+  });
+
+  it('D-05（对照）：事件全部 dueAt=null 时，评估仍包含“复习样本不足”说明', async () => {
+    const { harness, study, report } = makeEnv();
+    seedDeck(harness, 2);
+    const session = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+
+    // 只有新词首答（dueAt 恒 null），没有任何复习样本。
+    await study.submitAnswer({
+      sessionId: session.sessionId,
+      deckId: 'deck-1',
+      wordId: 'w-1',
+      mode: 'EN_TO_ZH',
+      prompt: 'x',
+      answer: 'y',
+      isCorrect: true,
+      recognition: 'KNOWN',
+      answeredAt: new Date('2025-03-01T08:00:00.000Z'),
+    });
+
+    const view = await report.getAssessment({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+
+    expect(view.suggestions.join('')).toContain('复习样本不足');
   });
 });
 

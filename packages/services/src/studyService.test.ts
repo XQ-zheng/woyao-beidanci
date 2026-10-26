@@ -378,6 +378,37 @@ describe('studyService：作答', () => {
     expect(result.correctAnswer).toBe('word2');
   });
 
+  it('D-05：复习作答记作答前 dueAt，新词首答记 null', async () => {
+    const { harness, study } = makeEnv();
+    const { deckId } = seedDeck(harness, 2);
+    const session = await study.startSession({ deckId, now: new Date(NOW_ISO) });
+
+    const first = await answer(study, {
+      sessionId: session.sessionId,
+      deckId,
+      wordId: 'w-1',
+      isCorrect: true,
+      answeredAt: '2025-03-01T03:00:00.000Z',
+    });
+    await answer(study, {
+      sessionId: session.sessionId,
+      deckId,
+      wordId: 'w-1',
+      isCorrect: true,
+      answeredAt: '2025-03-01T03:30:00.000Z',
+    });
+
+    const rows = harness.db
+      .prepare('SELECT user_word_id, due_at FROM learning_events ORDER BY answered_at ASC')
+      .all() as { user_word_id: string; due_at: string | null }[];
+
+    expect(rows).toHaveLength(2);
+    // 新词首答：没有“到期”概念 → null。
+    expect(rows[0]?.due_at).toBeNull();
+    // 复习作答：dueAt = 作答前状态里的 dueAt（即第一次作答后写回的那个到期时间）。
+    expect(rows[1]?.due_at).toBe(first.nextDueAt);
+  });
+
   it('时区：同一 answeredAt 在 Asia/Shanghai 与 America/New_York 下落到不同本地日', async () => {
     const { harness, settings, study } = makeEnv({ now: '2025-03-02T00:00:00.000Z' });
     const { deckId } = seedDeck(harness, 3);

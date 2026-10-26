@@ -89,6 +89,7 @@ function makeEvent(overrides: Partial<LearningEventRecord> = {}): LearningEventR
     recognition: 'KNOWN',
     stageBefore: -1,
     stageAfter: 0,
+    dueAt: null,
     answeredAt: '2025-01-05T01:00:00.000Z',
     localDate: '2025-01-05',
     timeZone: 'Asia/Shanghai',
@@ -1415,3 +1416,66 @@ describe('D-04：会话/词库事件查询、状态更新、来源与语料元�
     expect(repo.getFrequencyCorpusMeta('CET4', 'ngsl-1.3')?.totalTokens).toBeNull();
   });
 });
+
+describe('D-05：事件记录 due_at（喂给评估 M 项）', () => {
+  function seedDeckAndWords(db: SqliteDatabase): void {
+    const repo = createWordRepository(db);
+    repo.upsertDeck(makeDeckInput({ id: 'deck-1' }));
+    repo.createWord(makeWordInput({ id: 'w-1', lemma: 'abandon' }));
+  }
+
+  it('写入 dueAt 后 listEventsBySession 读回逐字段相等（完整投影）', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    const event = makeEvent({
+      eventId: 'e-due',
+      // 复习作答：dueAt = 作答前状态里的 dueAt。
+      dueAt: '2025-02-01T01:00:00.000Z',
+      answeredAt: '2025-02-01T01:05:00.000Z',
+    });
+
+    learning.appendEventAndUpdateState(event, makeState());
+
+    const [stored] = learning.listEventsBySession('sess-1');
+    expect(stored).toEqual(event);
+    expect(stored?.dueAt).toBe('2025-02-01T01:00:00.000Z');
+  });
+
+  it('dueAt=null 允许且读回 null（新词首答）', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e-null', dueAt: null, answeredAt: '2025-02-01T01:00:00.000Z' }),
+      makeState(),
+    );
+
+    const [stored] = learning.listEventsBySession('sess-1');
+    expect(stored?.dueAt).toBeNull();
+  });
+
+  it('dueAt 无毫秒（2025-06-30T04:00:00Z）被拒，且事件/状态/发件箱零残留', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+
+    expect(() =>
+      learning.appendEventAndUpdateState(
+        makeEvent({
+          eventId: 'e-bad',
+          dueAt: '2025-06-30T04:00:00Z',
+          answeredAt: '2025-06-30T04:05:00.000Z',
+        }),
+        makeState(),
+      ),
+    ).toThrow(InvalidRepositoryInputError);
+
+    // 校验失败发生在事务之前：一行都没写。
+    expect(countRows(db, 'learning_events')).toBe(0);
+    expect(countRows(db, 'learning_state')).toBe(0);
+    expect(countRows(db, 'sync_outbox')).toBe(0);
+  });
+});
+

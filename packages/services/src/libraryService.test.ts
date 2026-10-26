@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   LOCAL_USER_SOURCE_ID,
+  USER_SOURCE_NAME,
   ServiceConflictError,
   ServiceNotFoundError,
   ServiceValidationError,
@@ -19,14 +20,14 @@ afterEach(() => {
   }
 });
 
-/** 建一个跑在真实内存库上的词库服务，并播种“本地来源”。 */
+/** 建一个跑在真实内存库上的词库服务。 */
 function makeService(): {
   harness: ServiceTestHarness;
   service: LibraryService;
 } {
   const harness = createServiceTestHarness();
   harnesses.push(harness);
-  harness.seedSource(LOCAL_USER_SOURCE_ID);
+  // 刻意**不**播种 `sources`：自建词的本地来源由服务层自己在写词前创建（5B 修正）。
   const service = createLibraryService({ context: harness.context });
   return { harness, service };
 }
@@ -192,20 +193,125 @@ describe('libraryService：自建词', () => {
     ).rejects.toBeInstanceOf(ServiceValidationError);
   });
 
-  it('内容来源不存在时报 CONFLICT（初始化没跑完不属于“表单填错”）', async () => {
-    const harness = createServiceTestHarness();
-    harnesses.push(harness);
-    // 刻意不播种 sources：模拟首次启动引导还没创建本地来源。
-    const service = createLibraryService({ context: harness.context });
+  it('首次自建词就可用：服务层自己建本地来源（type USER、不许再分发），无需任何预热', async () => {
+    const { harness, service } = makeService();
+
+    // 库里一开始一行来源都没有——这正是 5A 里“自建词等于不可用”的现场。
+    const before = harness.db.prepare('SELECT COUNT(*) AS total FROM sources').get() as {
+      total: number;
+    };
+    expect(before.total).toBe(0);
+
+    const created = await service.createWord({
+      lemma: 'abandon',
+      senses: [{ pos: 'v.', simpleZh: '放弃' }],
+    });
+
+    const source = harness.db
+      .prepare(
+        `SELECT owner_scope, type, name, redistribution_allowed
+           FROM sources WHERE id = ?`,
+      )
+      .get(LOCAL_USER_SOURCE_ID) as
+      | { owner_scope: string; type: string; name: string; redistribution_allowed: number }
+      | undefined;
+    expect(source).toEqual({
+      owner_scope: 'LOCAL',
+      type: 'USER',
+      name: USER_SOURCE_NAME,
+      redistribution_allowed: 0,
+    });
+
+    // 义项真的挂在这个来源上（不是“外键没报错”就算过）。
+    const sense = harness.db
+      .prepare('SELECT source_id FROM word_senses WHERE word_id = ? AND sense_no = 1')
+      .get(created.wordId) as { source_id: string } | undefined;
+    expect(sense?.source_id).toBe(LOCAL_USER_SOURCE_ID);
+  });
+
+  it('本地来源只建一次：连续自建两个词不会多出一行，也不推 revision', async () => {
+    const { harness, service } = makeService();
+
+    await service.createWord({ lemma: 'abandon', senses: [{ pos: 'v.', simpleZh: '放弃' }] });
+    const first = harness.db
+      .prepare('SELECT revision, updated_at FROM sources WHERE id = ?')
+      .get(LOCAL_USER_SOURCE_ID) as { revision: number; updated_at: string };
+    await service.createWord({ lemma: 'ability', senses: [{ pos: 'n.', simpleZh: '能力' }] });
+
+    const rows = harness.db.prepare('SELECT COUNT(*) AS total FROM sources').get() as {
+      total: number;
+    };
+    const second = harness.db
+      .prepare('SELECT revision, updated_at FROM sources WHERE id = ?')
+      .get(LOCAL_USER_SOURCE_ID) as { revision: number; updated_at: string };
+
+    expect(rows.total).toBe(1);
+    // 数据层的 upsertSource 对“内容一致”的行是空操作：revision 与 updated_at 都不动，
+    // 否则同步侧会持续看到“来源变了”，而其实什么都没变。
+    expect(second).toEqual(first);
+  });
+
+  it('义项序号重复时报校验错误，而不是静默丢掉一个义项', async () => {
+    const { harness, service } = makeService();
+
+    await expect(
+      service.createWord({
+        lemma: 'abandon',
+        senses: [
+          { senseNo: 1, pos: 'v.', simpleZh: '放弃' },
+          { senseNo: 1, pos: 'n.', simpleZh: '放任' },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(ServiceValidationError);
+
+    // 关键：**一行都没写**。数据层按 (wordId, senseNo, sourceId) upsert，
+    // 若放过去，用户会发现自己填的第二个义项凭空消失且没有任何提示。
+    const words = harness.db.prepare('SELECT COUNT(*) AS total FROM words').get() as {
+      total: number;
+    };
+    expect(words.total).toBe(0);
+    const senses = harness.db.prepare('SELECT COUNT(*) AS total FROM word_senses').get() as {
+      total: number;
+    };
+    expect(senses.total).toBe(0);
+  });
+
+  it('省略 senseNo 时按数组序补齐 1..n（不因补齐后的序号“重复”误报）', async () => {
+    const { service } = makeService();
+
+    const created = await service.createWord({
+      lemma: 'abandon',
+      senses: [
+        { pos: 'n.', simpleZh: '放任' },
+        { senseNo: 3, pos: 'v.', simpleZh: '放弃' },
+      ],
+    });
+
+    // 第二个义项用显式 3，第一个按序补 1 —— 互不冲突。
+    expect(created.senses.map((sense) => sense.senseNo)).toEqual([1, 3]);
+  });
+
+  it('显式指定不存在的来源时报 CONFLICT（这条只服务于导入/脚本，不是默认路径的兜底）', async () => {
+    const { harness, service } = makeService();
 
     try {
-      await service.createWord({ lemma: 'abandon', senses: [{ pos: 'v.', simpleZh: '放弃' }] });
+      await service.createWord({
+        lemma: 'abandon',
+        sourceId: 'src-does-not-exist',
+        senses: [{ pos: 'v.', simpleZh: '放弃' }],
+      });
       throw new Error('期望抛出 ServiceConflictError，但调用成功了');
     } catch (error: unknown) {
       expect(error).toBeInstanceOf(ServiceConflictError);
       expect((error as ServiceConflictError).code).toBe('CONFLICT');
       expect((error as ServiceConflictError).subject).toBe('source');
     }
+
+    // 显式来源不存在时**不**顺手建它（那样会把拼错的 id 永久写进库），也不建本地来源。
+    const rows = harness.db.prepare('SELECT COUNT(*) AS total FROM sources').get() as {
+      total: number;
+    };
+    expect(rows.total).toBe(0);
   });
 });
 
@@ -277,6 +383,8 @@ describe('libraryService：词频分级', () => {
       importance: 'HIGH',
       frequency: 1000,
       rank: 1,
+      // 语料级字段，由 `getFrequencyCorpusMeta` 提供（5A 时这里恒为 null）。
+      totalTokens: 1000,
       corpusVersion: 'ngsl-1.2',
       sourceId: 'src-freq',
     });
@@ -324,7 +432,7 @@ describe('libraryService：词频分级', () => {
     expect(frequency.importance).toBe('HIGH');
     expect(frequency.frequency).toBe(1000);
     expect(frequency.rank).toBe(1);
-    // 数据层未暴露 total_tokens，因此这里恒为 null（见 dto.ts 的说明）。
+    // 这份语料导入时没给 `totalTokens`，所以是 null——不拿别的数字顶上。
     expect(frequency.totalTokens).toBeNull();
 
     // 语料之外的词是 UNKNOWN，不是 BASIC。

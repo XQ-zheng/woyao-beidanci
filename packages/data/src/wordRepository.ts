@@ -198,6 +198,73 @@ export interface FrequencyCorpusInput {
   readonly entries: readonly FrequencyCorpusEntry[];
 }
 
+/** 一条语料的元信息（语料级字段，与逐词条目无关）。 */
+export interface FrequencyCorpusMeta {
+  /** 语料总词数；来源没给出时为 `null`。 */
+  readonly totalTokens: number | null;
+  /** 当前生效语料的来源 id。 */
+  readonly sourceId: string;
+  /** 本行最近一次导入时间（整卷替换，见 001_init.sql 里 `created_at` 的例外说明）。 */
+  readonly importedAt: string;
+}
+
+/**
+ * 内容来源类型。
+ *
+ * 只列服务层真正会写的三种：`USER`（用户自建）、`BUILTIN`（随应用分发）、
+ * `ONLINE`（联网获取后缓存）。词频语料这类**导入**来源由导入脚本（Task 9）
+ * 直接写库，不走这里，所以不在这个联合类型里。
+ */
+export type SourceType = 'USER' | 'BUILTIN' | 'ONLINE';
+
+/** 创建/更新一个内容来源的输入。 */
+export interface SourceInput {
+  /** 来源 id；缺省时自动生成（自建内容请传固定 id，便于跨设备对齐）。 */
+  readonly id?: string;
+  /** 归属范围，见 `assertValidOwnerScope`。 */
+  readonly ownerScope: string;
+  readonly type: SourceType;
+  /** 展示名（非空）。 */
+  readonly name: string;
+  /** 版本标识（可空）。 */
+  readonly version?: string | null;
+  /** 来源主页/下载地址。 */
+  readonly url?: string | null;
+  /** 许可标识（例如 `CC-BY-4.0`）。 */
+  readonly licenseCode?: string | null;
+  /** 许可全文地址。 */
+  readonly licenseUrl?: string | null;
+  /** 署名文本。 */
+  readonly attribution?: string | null;
+  /** 是否允许再分发；`false` 的内容不得随应用打包（需求要求逐项核验许可）。 */
+  readonly redistributionAllowed: boolean;
+  /** 设备 id。 */
+  readonly deviceId: string;
+  /** 注入的时间。 */
+  readonly now: Date;
+}
+
+/** 来源记录（camelCase，对应 `sources` 一行）。 */
+export interface SourceRecord {
+  readonly id: string;
+  readonly ownerScope: string;
+  readonly type: string;
+  readonly name: string;
+  readonly version: string;
+  readonly url: string | null;
+  readonly licenseCode: string | null;
+  readonly licenseUrl: string | null;
+  readonly attribution: string | null;
+  readonly redistributionAllowed: boolean;
+  readonly checksum: string | null;
+  readonly importedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly deletedAt: string | null;
+  readonly deviceId: string;
+  readonly revision: number;
+}
+
 /** 词条/词库/词频仓储契约（Task 5 直接消费）。 */
 export interface WordRepository {
   createWord(input: WordInput): WordRecord;
@@ -221,6 +288,25 @@ export interface WordRepository {
   listDeckWordIds(deckId: string): string[];
   writeFrequencyCorpus(input: FrequencyCorpusInput): void;
   listFrequencyEntries(exam: string, corpusVersion: string): FrequencyEntry[];
+  /**
+   * 按 id 创建/更新一条内容来源（Task 5B 补）。
+   *
+   * 为什么必须补：`sources` 表在 5A 之前**没有任何读写入口**，而 `word_senses.source_id`
+   * 有外键——于是“用户随时把不会的单词收入单词本”这条需求只能靠外键失败兜底，
+   * 实际等于不可用。自建内容需要一个自己的来源（`type: 'USER'`）。
+   *
+   * **幂等**：内容完全一致且未被软删时**不写**（返回既有行，不推 revision）。
+   * 否则每次建词都 upsert 一次来源，同步侧会看到无穷无尽的“变更”。
+   */
+  upsertSource(input: SourceInput): SourceRecord;
+  /**
+   * 读一份语料的元信息（Task 5B 补）。
+   *
+   * `frequency_entries.total_tokens` 是**语料级**字段（整卷替换，所有行一致），
+   * 但 `listFrequencyEntries` 只返回逐词条目，服务层拿不到它，UI 就展示不了“统计口径”。
+   * 没有任何记录时返回 `null`（不编造 totalTokens）。
+   */
+  getFrequencyCorpusMeta(exam: string, corpusVersion: string): FrequencyCorpusMeta | null;
 }
 
 /** 把词形标准化：去首尾空白、内部连续空白折叠为单个空格、转小写。 */
@@ -366,6 +452,50 @@ function toDeckRecord(row: DeckRow): DeckRecord {
     name: row.name,
     kind: row.kind,
     sourceId: row.source_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+    deviceId: row.device_id,
+    revision: row.revision,
+  };
+}
+
+/** `sources` 行的 snake_case 形状。 */
+interface SourceRow {
+  id: string;
+  owner_scope: string;
+  type: string;
+  name: string;
+  version: string;
+  url: string | null;
+  license_code: string | null;
+  license_url: string | null;
+  attribution: string | null;
+  redistribution_allowed: number;
+  checksum: string | null;
+  imported_at: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  device_id: string;
+  revision: number;
+}
+
+/** 行 → 来源记录。`redistribution_allowed` 在库里是 0/1，必须还原成布尔。 */
+function toSourceRecord(row: SourceRow): SourceRecord {
+  return {
+    id: row.id,
+    ownerScope: row.owner_scope,
+    type: row.type,
+    name: row.name,
+    version: row.version,
+    url: row.url,
+    licenseCode: row.license_code,
+    licenseUrl: row.license_url,
+    attribution: row.attribution,
+    redistributionAllowed: row.redistribution_allowed === 1,
+    checksum: row.checksum,
+    importedAt: row.imported_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -622,6 +752,33 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
        FROM frequency_entries
       WHERE exam = ? AND corpus_version = ?
       ORDER BY rank ASC, word_id ASC`,
+  );
+  const selectFrequencyCorpusMeta = db.prepare(
+    // 一份语料是整卷替换的，因此所有行的 `total_tokens` / `source_id` 一致；
+    // 取 `created_at` 最大的一行即“最近一次导入”的元信息。
+    `SELECT total_tokens, source_id, created_at
+       FROM frequency_entries
+      WHERE exam = ? AND corpus_version = ?
+      ORDER BY created_at DESC
+      LIMIT 1`,
+  );
+  const SOURCE_COLUMNS = `id, owner_scope, type, name, version, url, license_code, license_url,
+                          attribution, redistribution_allowed, checksum, imported_at, created_at,
+                          updated_at, deleted_at, device_id, revision`;
+  const selectSourceById = db.prepare(`SELECT ${SOURCE_COLUMNS} FROM sources WHERE id = ?`);
+  const insertSource = db.prepare(
+    `INSERT INTO sources
+       (id, owner_scope, type, name, version, url, license_code, license_url, attribution,
+        redistribution_allowed, checksum, imported_at, created_at, updated_at, deleted_at,
+        device_id, revision)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, 0)`,
+  );
+  const updateSource = db.prepare(
+    `UPDATE sources
+        SET owner_scope = ?, type = ?, name = ?, version = ?, url = ?, license_code = ?,
+            license_url = ?, attribution = ?, redistribution_allowed = ?, imported_at = ?,
+            updated_at = ?, deleted_at = NULL, device_id = ?, revision = revision + 1
+      WHERE id = ?`,
   );
 
   /**
@@ -966,6 +1123,112 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
         entry.equalCount = row.equal_count;
         return entry;
       });
+    },
+
+    upsertSource(input: SourceInput): SourceRecord {
+      if (input === null || typeof input !== 'object') {
+        throw new InvalidRepositoryInputError('input', '来源输入不能为空');
+      }
+      const ownerScope = assertValidOwnerScope(input.ownerScope);
+      if (input.type !== 'USER' && input.type !== 'BUILTIN' && input.type !== 'ONLINE') {
+        throw new InvalidRepositoryInputError('type', `未知来源类型：${String(input.type)}`);
+      }
+      const name = requireNonEmptyString(input.name, 'name').trim();
+      const deviceId = requireNonEmptyString(input.deviceId, 'deviceId');
+      if (typeof input.redistributionAllowed !== 'boolean') {
+        throw new InvalidRepositoryInputError(
+          'redistributionAllowed',
+          'redistributionAllowed 必须是布尔值（许可是否允许再分发不能靠默认值猜）',
+        );
+      }
+      const nowIso = toIsoInstant(input.now);
+      const version = input.version ?? '';
+      const url = input.url ?? null;
+      const licenseCode = input.licenseCode ?? null;
+      const licenseUrl = input.licenseUrl ?? null;
+      const attribution = input.attribution ?? null;
+      const redistributionAllowed = input.redistributionAllowed ? 1 : 0;
+      const sourceId = input.id ?? newId();
+
+      return runInTransaction(
+        db,
+        () => {
+          const existing = selectSourceById.get(sourceId) as SourceRow | undefined;
+          if (existing === undefined) {
+            insertSource.run(
+              sourceId,
+              ownerScope,
+              input.type,
+              name,
+              version,
+              url,
+              licenseCode,
+              licenseUrl,
+              attribution,
+              redistributionAllowed,
+              nowIso,
+              nowIso,
+              nowIso,
+              deviceId,
+            );
+          } else {
+            // 幂等：内容完全一致且没被软删时**不写**。
+            // 服务层每次建自建词前都会调一次 `upsertSource` 以确保来源存在，
+            // 若每次都推 revision，同步侧会持续看到“来源变了”，而其实什么都没变。
+            const unchanged =
+              existing.deleted_at === null &&
+              existing.owner_scope === ownerScope &&
+              existing.type === input.type &&
+              existing.name === name &&
+              existing.version === version &&
+              existing.url === url &&
+              existing.license_code === licenseCode &&
+              existing.license_url === licenseUrl &&
+              existing.attribution === attribution &&
+              existing.redistribution_allowed === redistributionAllowed;
+            if (!unchanged) {
+              updateSource.run(
+                ownerScope,
+                input.type,
+                name,
+                version,
+                url,
+                licenseCode,
+                licenseUrl,
+                attribution,
+                redistributionAllowed,
+                nowIso,
+                nowIso,
+                deviceId,
+                sourceId,
+              );
+            }
+          }
+
+          const stored = selectSourceById.get(sourceId) as SourceRow | undefined;
+          if (stored === undefined) {
+            throw new InvalidRepositoryInputError('id', `来源写入后回读失败（id=${sourceId}）`);
+          }
+          return toSourceRecord(stored);
+        },
+        { mode: 'IMMEDIATE' },
+      );
+    },
+
+    getFrequencyCorpusMeta(exam: string, corpusVersion: string): FrequencyCorpusMeta | null {
+      const examKey = requireNonEmptyString(exam, 'exam');
+      const versionKey = requireNonEmptyString(corpusVersion, 'corpusVersion');
+      const row = selectFrequencyCorpusMeta.get(examKey, versionKey) as
+        | { total_tokens: number | null; source_id: string; created_at: string }
+        | undefined;
+      if (row === undefined) {
+        return null;
+      }
+      return {
+        totalTokens: row.total_tokens,
+        sourceId: row.source_id,
+        importedAt: row.created_at,
+      };
     },
   };
 }

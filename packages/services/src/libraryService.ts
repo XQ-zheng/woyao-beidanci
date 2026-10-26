@@ -12,11 +12,18 @@
  */
 
 import { classifyFrequencyImportance, type FrequencyEntry } from '@woyao/core';
-import { LOCAL_OWNER_SCOPE, type DeckKind, type DeckRecord, type WordRecord } from '@woyao/data';
+import {
+  LOCAL_OWNER_SCOPE,
+  type DeckKind,
+  type DeckRecord,
+  type FrequencyCorpusMeta,
+  type WordRecord,
+} from '@woyao/data';
 
 import {
   LOCAL_USER_SOURCE_ID,
   NOTEBOOK_DECK_NAME,
+  USER_SOURCE_NAME,
   createDeckInputSchema,
   createWordInputSchema,
   getFrequencyInputSchema,
@@ -29,7 +36,7 @@ import {
   type DeckWordView,
   type FrequencyView,
 } from './dto';
-import { ServiceConflictError, ServiceNotFoundError } from './errors';
+import { ServiceConflictError, ServiceNotFoundError, ServiceValidationError } from './errors';
 import type { ServiceContext } from './ports';
 
 /** 词库服务契约。 */
@@ -71,6 +78,14 @@ export interface LibraryServiceOptions {
 interface FrequencyLookup {
   readonly byWordId: ReadonlyMap<string, FrequencyEntry>;
   readonly knownWordCount: number;
+  /**
+   * 语料级元信息。
+   *
+   * `null` 表示**该 (exam, corpusVersion) 没有任何频率行**；非 null 时
+   * `totalTokens` 仍可能是 `null`（导入方没给出语料总词数）。
+   * 这两种情况都不能编一个数字出来——UI 的“统计口径”宁可空着，也不能虚报。
+   */
+  readonly meta: FrequencyCorpusMeta | null;
 }
 
 /** 没有语料上下文时的词频视图（**不把未知当低频**）。 */
@@ -112,13 +127,17 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
 
   /** 读一份语料，建成 `wordId → entry` 的索引。 */
   async function loadFrequencyLookup(exam: string, corpusVersion: string): Promise<FrequencyLookup> {
-    const entries = await context.repos.words.listFrequencyEntries(exam, corpusVersion);
+    // 两次读并行：逐词条目（分级要用）与语料级元信息（`totalTokens` 要用）。
+    const [entries, meta] = await Promise.all([
+      context.repos.words.listFrequencyEntries(exam, corpusVersion),
+      context.repos.words.getFrequencyCorpusMeta(exam, corpusVersion),
+    ]);
     const byWordId = new Map<string, FrequencyEntry>();
     for (const entry of entries) {
       byWordId.set(entry.wordId, entry);
     }
     // 分母是**该语料版本里有频率的词条总数**，不是词库词数（见文件头注释）。
-    return { byWordId, knownWordCount: entries.length };
+    return { byWordId, knownWordCount: entries.length, meta };
   }
 
   /**
@@ -149,8 +168,10 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       importance,
       frequency: entry.frequency,
       rank: entry.rank ?? null,
-      // 数据层的 `listFrequencyEntries` 目前不返回 `total_tokens`（见 dto 的说明）。
-      totalTokens: null,
+      // 语料级字段，取自 `frequency_entries.total_tokens`（整卷替换，所有行同值）。
+      // 词不在语料里时上面已经返回 null；这里 `meta` 理论上必然非 null（有 entry 就有行），
+      // 用可选链兜住“数据层将来改了聚合口径”的情况，而不是断言非空。
+      totalTokens: lookup.meta?.totalTokens ?? null,
       corpusVersion: entry.corpusVersion,
       sourceId: entry.sourceId,
     };
@@ -215,6 +236,65 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       throw new ServiceNotFoundError('word', wordId);
     }
     return word;
+  }
+
+  /**
+   * 确保“本地自建内容来源”存在。
+   *
+   * 为什么必须在**写词之前**做：`word_senses.source_id` 有外键，来源表在 5A 之前
+   * 一个写入口都没有，于是自建词的义项只能靠外键失败兜底——那等于“自建词库不可用”。
+   * 现在每次自建词都先 upsert 一次（数据层对内容一致的行**不写、不推 revision**，
+   * 所以重复调用没有副作用，也不会让同步侧看到无穷无尽的“来源变了”）。
+   *
+   * 归属范围跟词条一致：登录用户的自建内容挂在 `acct:<id>` 名下，不串到 `LOCAL`。
+   *
+   * @param sourceId 目标来源 id。
+   */
+  async function ensureUserSource(sourceId: string): Promise<void> {
+    await context.repos.words.upsertSource({
+      id: sourceId,
+      ownerScope,
+      type: 'USER',
+      name: USER_SOURCE_NAME,
+      // 用户自建内容不允许随应用再分发（需求要求逐项核验许可，默认必须是最保守的那个）。
+      redistributionAllowed: false,
+      deviceId: context.device.deviceId(),
+      now: context.clock.now(),
+    });
+  }
+
+  /**
+   * 把义项序号补齐成 1..n，并拒绝重复。
+   *
+   * 为什么要在服务层拦：数据层按 `(wordId, senseNo, sourceId)` upsert，
+   * 两个同号义项会**静默**后者覆盖前者——用户会发现自己填的义项少了一个，
+   * 而界面上没有任何报错。宁可在这里报 `VALIDATION_FAILED`，让用户改序号。
+   *
+   * @param senses 已通过 zod 校验的义项。
+   * @returns 补齐后的序号数组（与入参等长、同序）。
+   * @throws {ServiceValidationError} 存在重复序号时。
+   */
+  function resolveSenseNos(senses: readonly { senseNo?: number }[]): number[] {
+    const senseNos = senses.map((sense, index) => sense.senseNo ?? index + 1);
+    const seen = new Set<number>();
+    const duplicates = new Set<number>();
+    for (const senseNo of senseNos) {
+      if (seen.has(senseNo)) {
+        duplicates.add(senseNo);
+      }
+      seen.add(senseNo);
+    }
+    if (duplicates.size > 0) {
+      const repeated = [...duplicates].sort((left, right) => left - right);
+      throw new ServiceValidationError(
+        repeated.map((senseNo) => ({
+          path: 'senses.senseNo',
+          message: `义项序号 ${String(senseNo)} 重复：同一序号会覆盖前一个义项`,
+        })),
+        '自建词校验未通过',
+      );
+    }
+    return senseNos;
   }
 
   return {
@@ -346,10 +426,17 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       const validated = parseOrThrow(createWordInputSchema, input, '自建词');
       const scope = validated.ownerScope ?? ownerScope;
       const sourceId = validated.sourceId ?? LOCAL_USER_SOURCE_ID;
+      const senseNos = resolveSenseNos(validated.senses);
 
       // 先查后写，才能区分“新建”与“命中已有词”。`createWord` 本身是幂等的 create-or-update，
       // 但它的返回值里没有这个信息。
       const existing = await context.repos.words.getWordByLemma(validated.lemma, scope);
+
+      // 写词之前先确保来源存在——这是“用户随时把不会的单词收入单词本/自建词库”的前提。
+      // 默认来源（`local-user`）由服务层自建；调用方显式指定的来源则要求已存在（见下面的 catch）。
+      if (validated.sourceId === undefined) {
+        await ensureUserSource(sourceId);
+      }
 
       let word: WordRecord;
       try {
@@ -361,7 +448,7 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
           phoneticUk: validated.phoneticUk ?? null,
           phoneticUs: validated.phoneticUs ?? null,
           senses: validated.senses.map((sense, index) => ({
-            senseNo: sense.senseNo ?? index + 1,
+            senseNo: senseNos[index],
             pos: sense.pos,
             simpleZh: sense.simpleZh,
             detailedZh: sense.detailedZh ?? null,
@@ -372,12 +459,14 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
           now: context.clock.now(),
         });
       } catch (error: unknown) {
-        if (isForeignKeyViolation(error)) {
-          // 自建词的义项必须挂在一个来源上，而来源由导入脚本/引导流程创建（见 dto 的说明）。
-          // 把它翻译成“环境没配好”，而不是让 UI 去解析 SQLite 的错误文本。
+        // 这一层**不再**兜“默认来源缺失”：上一段已经 upsert 过，走不到这里。
+        // 剩下的唯一可能是调用方显式传了一个不存在的 `sourceId`（导入/脚本场景），
+        // 服务层没有 `getSourceById` 读口可以预检，于是把外键失败翻译成 CONFLICT，
+        // 让 UI 知道“引用的来源不存在”，而不是漏一句 SQLite 错误出去。
+        if (validated.sourceId !== undefined && isForeignKeyViolation(error)) {
           throw new ServiceConflictError(
             'source',
-            `内容来源 ${sourceId} 不存在：自建词需要先完成内容来源初始化`,
+            `内容来源 ${sourceId} 不存在：显式指定的来源必须已由导入流程创建`,
           );
         }
         throw error;

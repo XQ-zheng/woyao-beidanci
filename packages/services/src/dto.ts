@@ -27,11 +27,17 @@ export const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
  * 用户自建内容的来源 id。
  *
  * `word_senses.source_id` 有外键，所以自建词也必须挂在某个来源上；
- * 这里统一用这个“本地来源”，由导入脚本/首次启动引导创建（Task 9）。
- * 服务层**不自己建来源**：没有来源表就说明初始化没跑完，这属于环境问题
- * （`ServiceConflictError`），不该在每次创建单词时偷偷插一行。
+ * 这里统一用这个“本地来源”。
+ *
+ * **语义变更（5B）**：这个来源由 `LibraryService.createWord` 在写词之前
+ * `upsertSource` 保证存在（`type: 'USER'`、`redistributionAllowed: false`），
+ * 不再依赖导入脚本/首次启动引导先建好——否则第一次自建词一定撞外键，
+ * “把不会的单词收入单词本”这条需求等于不可用。
  */
 export const LOCAL_USER_SOURCE_ID = 'local-user';
+
+/** 本地自建内容来源的展示名（设置页/关于页里给用户看）。 */
+export const USER_SOURCE_NAME = '本地自建内容';
 
 /** 生词本词库的默认名字。 */
 export const NOTEBOOK_DECK_NAME = '生词本';
@@ -84,11 +90,13 @@ export interface FrequencyView {
   readonly frequency: number | null;
   readonly rank: number | null;
   /**
-   * 语料总词数。
+   * 语料总词数（`frequency_entries.total_tokens`，语料级字段）。
    *
-   * 数据层当前的 `listFrequencyEntries` 不返回 `total_tokens`（只有百分位需要它，
-   * 而 `knownWordCount` 由调用方给），因此这里恒为 `null`。字段先留着，
-   * 5B 给数据层加方法后直接填值，不用再改 DTO 与 UI。
+   * 5B 起由数据层的 `getFrequencyCorpusMeta` 提供真值。仍可能为 `null` 的两种情况：
+   * 1. 调用方没给 `exam`/`corpusVersion`（没有语料上下文）；
+   * 2. 该词不在语料里（整份视图按“未知”处理，不拿别的词的语料规模冒充）；
+   * 3. 导入方本身没给出总词数。
+   * 三种情况都**不编造数字**——UI 的“统计口径”宁可空着，也不能虚报。
    */
   readonly totalTokens: number | null;
   readonly corpusVersion: string | null;
@@ -142,6 +150,7 @@ export interface StudyWindowView {
 
 /** 自建词的一个义项（不含 sourceId：由 `CreateWordInput.sourceId` 统一提供）。 */
 export interface CreateSenseInput {
+  /** 义项序号，从 1 开始；缺省按数组序 1..n。**重复会抛 `VALIDATION_FAILED`**（不许静默覆盖）。 */
   readonly senseNo?: number;
   readonly pos: string;
   readonly simpleZh: string;
@@ -158,7 +167,12 @@ export interface CreateWordInput {
   readonly language?: string;
   readonly phoneticUk?: string | null;
   readonly phoneticUs?: string | null;
-  /** 义项来源 id；缺省 `LOCAL_USER_SOURCE_ID`。必须已存在于 `sources` 表。 */
+  /**
+   * 义项来源 id。
+   *
+   * 缺省为 `LOCAL_USER_SOURCE_ID`，此时服务层会在写词前自动确保该来源存在。
+   * **显式给出时**要求它已存在（导入/脚本场景），否则抛 `CONFLICT`。
+   */
   readonly sourceId?: string;
   readonly senses: readonly CreateSenseInput[];
   /** 给了 exam + corpusVersion 才查词频；否则返回 `UNKNOWN`。 */

@@ -1159,3 +1159,259 @@ describe('设置与学习时段', () => {
     expect(settings.listPlanWindows()).toEqual([]);
   });
 });
+
+describe('D-04：会话/词库事件查询、状态更新、来源与语料元信息', () => {
+  /** 造词库 + 三个词。 */
+  function seedDeckAndWords(db: SqliteDatabase): void {
+    const repo = createWordRepository(db);
+    repo.upsertDeck(makeDeckInput({ id: 'deck-1' }));
+    for (const wordId of ['w-1', 'w-2', 'w-3']) {
+      repo.createWord(makeWordInput({ id: wordId, lemma: `word-${wordId}` }));
+    }
+  }
+
+  it('listEventsBySession 只返回该会话的事件，按 answeredAt 升序', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e1', answeredAt: '2025-01-05T01:00:00.000Z' }),
+      makeState(),
+    );
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e2', answeredAt: '2025-01-05T01:05:00.000Z' }),
+      makeState({ correctCount: 1 }),
+    );
+    learning.appendEventAndUpdateState(
+      makeEvent({ eventId: 'e3', sessionId: 'sess-2', userWordId: 'deck-1:w-2' }),
+      makeState({ userWordId: 'deck-1:w-2', wordId: 'w-2' }),
+    );
+
+    const events = learning.listEventsBySession('sess-1');
+    expect(events.map((event) => event.eventId)).toEqual(['e1', 'e2']);
+    // 事件记录必须是完整投影（`is_correct` 要还原成布尔，否则 `if (event.isCorrect)` 恒真）。
+    expect(events[0]?.isCorrect).toBe(true);
+    expect(events[0]?.durationMs).toBe(3200);
+    expect(events[0]?.syncedAt).toBeNull();
+    expect(learning.listEventsBySession('sess-none')).toEqual([]);
+  });
+
+  it('listEventsByDeck 是闭区间，且两端都过 ISO 严格校验', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    for (const [eventId, answeredAt] of [
+      ['e1', '2025-01-05T01:00:00.000Z'],
+      ['e2', '2025-01-06T01:00:00.000Z'],
+      ['e3', '2025-01-07T01:00:00.000Z'],
+    ] as const) {
+      learning.appendEventAndUpdateState(makeEvent({ eventId, answeredAt }), makeState());
+    }
+
+    // 端点都要包含（评估窗口 `now - 90 天 ~ now` 会把“恰好 90 天前”算进来）。
+    const inRange = learning.listEventsByDeck(
+      'deck-1',
+      '2025-01-05T01:00:00.000Z',
+      '2025-01-06T01:00:00.000Z',
+    );
+    expect(inRange.map((event) => event.eventId)).toEqual(['e1', 'e2']);
+
+    // 乱格式必须在**进 SQL 之前**被拒：字典序比较对 `+08:00`、无毫秒、空格写法都会静默出错。
+    for (const bad of ['2025-01-05T09:00:00+08:00', '2025-01-05T01:00:00Z', '2025-01-05 01:00:00']) {
+      expect(() => learning.listEventsByDeck('deck-1', bad, '2025-01-06T01:00:00.000Z')).toThrow(
+        InvalidRepositoryInputError,
+      );
+      expect(() => learning.listEventsByDeck('deck-1', '2025-01-05T01:00:00.000Z', bad)).toThrow(
+        InvalidRepositoryInputError,
+      );
+    }
+  });
+
+  it('updateState 只动状态：不发事件、发件箱 +1、保留 last_result', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    const sync = createSyncRepository(db);
+    learning.appendEventAndUpdateState(makeEvent({ isCorrect: false }), makeState({ wrongCount: 1 }));
+
+    const before = {
+      events: countRows(db, 'learning_events'),
+      outbox: sync.listOutbox().length,
+      revision: (db
+        .prepare('SELECT revision FROM learning_state WHERE user_word_id = ?')
+        .get('deck-1:w-1') as { revision: number }).revision,
+    };
+
+    const suppressed = { ...makeState({ wrongCount: 1 }), suppressedAt: LATER.toISOString() };
+    learning.updateState(suppressed, 'dev-1', LATER);
+
+    expect(countRows(db, 'learning_events')).toBe(before.events);
+    expect(learning.getState('deck-1:w-1')).toEqual(suppressed);
+    const outbox = sync.listOutbox();
+    expect(outbox).toHaveLength(before.outbox + 1);
+    expect(outbox[outbox.length - 1]?.entityType).toBe('LEARNING_STATE');
+    expect(outbox[outbox.length - 1]?.createdAt).toBe(LATER.toISOString());
+    const after = db
+      .prepare('SELECT revision, last_result FROM learning_state WHERE user_word_id = ?')
+      .get('deck-1:w-1') as { revision: number; last_result: string | null };
+    expect(after.revision).toBe(before.revision + 1);
+    // 抑制不是一次作答：不能把上一次的真实结果覆盖成空。
+    expect(after.last_result).toBe('WRONG');
+
+    // 恢复（suppressedAt -> null）同样只动状态。
+    learning.updateState({ ...suppressed, suppressedAt: null }, 'dev-1', LATER);
+    expect(learning.getState('deck-1:w-1')?.suppressedAt).toBeNull();
+    expect(countRows(db, 'learning_events')).toBe(before.events);
+  });
+
+  it('updateState 对没有状态的词也能建行（用户还没学过就想屏蔽）', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+
+    learning.updateState(
+      { ...makeState({ userWordId: 'deck-1:w-3', wordId: 'w-3' }), suppressedAt: NOW.toISOString() },
+      'dev-1',
+      NOW,
+    );
+
+    const state = learning.getState('deck-1:w-3');
+    expect(state?.suppressedAt).toBe(NOW.toISOString());
+    expect(state?.wrongCount).toBe(0);
+  });
+
+  it('getSession 按 id 读会话，缺失返回 null', () => {
+    const db = createDatabase();
+    seedDeckAndWords(db);
+    const learning = createLearningRepository(db);
+    learning.upsertSession({
+      sessionId: 'sess-1',
+      deckId: 'deck-1',
+      startedAt: '2025-01-05T01:00:00.000Z',
+      endedAt: null,
+      localDate: '2025-01-05',
+      timeZone: 'Asia/Shanghai',
+      newCount: 2,
+      reviewCount: 1,
+      activeDurationMs: 0,
+      planSnapshotJson: '{"timeZone":"Asia/Shanghai"}',
+      deviceId: 'dev-1',
+      revision: 0,
+    });
+
+    const session = learning.getSession('sess-1');
+    expect(session?.deckId).toBe('deck-1');
+    expect(session?.endedAt).toBeNull();
+    expect(session?.newCount).toBe(2);
+    expect(learning.getSession('sess-none')).toBeNull();
+  });
+
+  it('upsertSource 幂等：同内容两次只一行且 revision 不变；改内容才 +1', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+
+    const first = repo.upsertSource({
+      id: 'local-user',
+      ownerScope: LOCAL_OWNER_SCOPE,
+      type: 'USER',
+      name: '本地自建',
+      redistributionAllowed: false,
+      deviceId: 'dev-1',
+      now: NOW,
+    });
+    expect(first.id).toBe('local-user');
+    expect(first.type).toBe('USER');
+    expect(first.redistributionAllowed).toBe(false);
+    expect(first.revision).toBe(0);
+    expect(first.importedAt).toBe(NOW.toISOString());
+
+    const second = repo.upsertSource({
+      id: 'local-user',
+      ownerScope: LOCAL_OWNER_SCOPE,
+      type: 'USER',
+      name: '本地自建',
+      redistributionAllowed: false,
+      deviceId: 'dev-1',
+      now: LATER,
+    });
+    // 内容一致 → 不写。否则服务层每次建自建词都会推一次 revision，同步永远有变更。
+    expect(second.revision).toBe(0);
+    expect(second.updatedAt).toBe(first.updatedAt);
+    expect(countRows(db, 'sources')).toBe(1);
+
+    const renamed = repo.upsertSource({
+      id: 'local-user',
+      ownerScope: LOCAL_OWNER_SCOPE,
+      type: 'USER',
+      name: '我的自建词',
+      redistributionAllowed: false,
+      deviceId: 'dev-1',
+      now: LATER,
+    });
+    expect(renamed.revision).toBe(1);
+    expect(renamed.name).toBe('我的自建词');
+    expect(countRows(db, 'sources')).toBe(1);
+  });
+
+  it('upsertSource 拒绝非法类型与非布尔许可标记', () => {
+    const db = createDatabase();
+    const repo = createWordRepository(db);
+
+    expect(() =>
+      repo.upsertSource({
+        ownerScope: LOCAL_OWNER_SCOPE,
+        // 故意绕过类型，验证运行时也拦得住（JS 调用方/IPC 反序列化都可能送进来）。
+        type: 'DICTIONARY' as unknown as 'USER',
+        name: '词典',
+        redistributionAllowed: true,
+        deviceId: 'dev-1',
+        now: NOW,
+      }),
+    ).toThrow(InvalidRepositoryInputError);
+    expect(() =>
+      repo.upsertSource({
+        ownerScope: LOCAL_OWNER_SCOPE,
+        type: 'USER',
+        name: '本地自建',
+        redistributionAllowed: 'yes' as unknown as boolean,
+        deviceId: 'dev-1',
+        now: NOW,
+      }),
+    ).toThrow(InvalidRepositoryInputError);
+    expect(countRows(db, 'sources')).toBe(0);
+  });
+
+  it('getFrequencyCorpusMeta 无记录返回 null，导入后给出 totalTokens 与来源', () => {
+    const db = createDatabase();
+    seedSource(db, 'src-ngsl');
+    const repo = createWordRepository(db);
+    repo.createWord(makeWordInput({ id: 'w-1', lemma: 'abandon' }));
+
+    expect(repo.getFrequencyCorpusMeta('CET4', 'ngsl-1.2')).toBeNull();
+
+    repo.writeFrequencyCorpus({
+      exam: 'CET4',
+      corpusVersion: 'ngsl-1.2',
+      sourceId: 'src-ngsl',
+      totalTokens: 12345,
+      knownWordCount: 1,
+      entries: [{ wordId: 'w-1', frequency: 100, rank: 1, equalCount: 1 }],
+    });
+
+    expect(repo.getFrequencyCorpusMeta('CET4', 'ngsl-1.2')).toMatchObject({
+      totalTokens: 12345,
+      sourceId: 'src-ngsl',
+    });
+    // totalTokens 为 null 时也如实返回 null（不编造成 0）。
+    repo.writeFrequencyCorpus({
+      exam: 'CET4',
+      corpusVersion: 'ngsl-1.3',
+      sourceId: 'src-ngsl',
+      totalTokens: null,
+      knownWordCount: 1,
+      entries: [{ wordId: 'w-1', frequency: 5, rank: 1, equalCount: 1 }],
+    });
+    expect(repo.getFrequencyCorpusMeta('CET4', 'ngsl-1.3')?.totalTokens).toBeNull();
+  });
+});

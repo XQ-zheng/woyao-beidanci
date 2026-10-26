@@ -116,6 +116,37 @@ export interface LearningRepository {
   listSessions(fromIso: string, toIso: string): StudySessionRecord[];
   listMistakes(deckId: string): MistakeRecord[];
   listDailyStats(fromLocalDate: string, toLocalDate: string): DailyStatRecord[];
+  /**
+   * 某个会话的全部作答事件，按 `answered_at` 升序（Task 5B 补）。
+   *
+   * `finishSession` 要用它汇总“新词数/复习数/时长”，口径必须来自**事件事实**
+   * 而不是会话行上的预估数（会话行里的 `new_count` 是开始时的队列长度）。
+   */
+  listEventsBySession(sessionId: string): LearningEventRecord[];
+  /**
+   * 某个词库在时间区间内的作答事件，按 `answered_at` 升序（Task 5B 补）。
+   *
+   * 用 `learning_events.deck_id` 这个**冗余列**过滤：事件表要能在不 JOIN
+   * `learning_state` 的前提下按词库汇总（取舍见 docs §4.2），评估的 90 天窗口正是这种查询。
+   * 区间是**闭区间**，两端都要过与写入同一套 ISO 严格校验（字典序比较的前提）。
+   */
+  listEventsByDeck(deckId: string, fromIso: string, toIso: string): LearningEventRecord[];
+  /**
+   * 只更新学习状态（Task 5B 补）。
+   *
+   * 用于“此单词不再出现”这类**没有对应事件**的状态变更：抑制不是一次作答，
+   * 塞进 `appendEventAndUpdateState` 会凭空造出一条假事件、污染正确率与时长统计。
+   * 同事务写一条 `LEARNING_STATE` 发件箱，保证状态变更能被同步。
+   */
+  updateState(state: LearningState, deviceId: string, now: Date): void;
+  /**
+   * 按 id 读一个会话（Task 5B 补）。
+   *
+   * `finishSession` 只拿到 `sessionId`，却需要 `deckId` / `startedAt` / `timeZone` /
+   * `plan_snapshot_json` 才能把会话行写完整；没有这个方法就只能靠
+   * `listSessions(极早时间, now)` 全表扫一遍再筛，既慢又容易在时钟回拨时漏掉。
+   */
+  getSession(sessionId: string): StudySessionRecord | null;
 }
 
 /**
@@ -186,6 +217,26 @@ function toLearningState(row: LearningStateRow): LearningState {
   };
 }
 
+/** `learning_events` 行的 snake_case 形状。 */
+interface LearningEventRow {
+  event_id: string;
+  user_word_id: string;
+  session_id: string | null;
+  mode: TrainingMode;
+  prompt: string;
+  answer: string;
+  is_correct: number;
+  recognition: Recognition;
+  stage_before: number;
+  stage_after: number;
+  answered_at: string;
+  local_date: string;
+  time_zone: string;
+  duration_ms: number | null;
+  device_id: string;
+  synced_at: string | null;
+}
+
 /** 行 → 会话记录。 */
 function toSessionRecord(row: StudySessionRow): StudySessionRecord {
   return {
@@ -201,6 +252,28 @@ function toSessionRecord(row: StudySessionRow): StudySessionRecord {
     planSnapshotJson: row.plan_snapshot_json,
     deviceId: row.device_id,
     revision: row.revision,
+  };
+}
+
+/** 行 → 作答事件。`is_correct` 在库里是 0/1，必须还原成布尔，否则 `if (event.isCorrect)` 恒真。 */
+function toEventRecord(row: LearningEventRow): LearningEventRecord {
+  return {
+    eventId: row.event_id,
+    userWordId: row.user_word_id,
+    sessionId: row.session_id,
+    mode: row.mode,
+    prompt: row.prompt,
+    answer: row.answer,
+    isCorrect: row.is_correct === 1,
+    recognition: row.recognition,
+    stageBefore: row.stage_before,
+    stageAfter: row.stage_after,
+    answeredAt: row.answered_at,
+    localDate: row.local_date,
+    timeZone: row.time_zone,
+    durationMs: row.duration_ms,
+    deviceId: row.device_id,
+    syncedAt: row.synced_at,
   };
 }
 
@@ -279,6 +352,24 @@ function requireLocalDate(value: string, field: string): string {
 }
 
 /**
+ * 把注入的时刻转成落库用的 UTC ISO-8601 毫秒串。
+ *
+ * 仍然不调用 `new Date()`（无参）：时间只从调用方来。`toISOString()` 恰好产出
+ * 与 `ISO_INSTANT_PATTERN` 完全一致的形态，因此“写入”和“校验”用的是同一条规则。
+ *
+ * @param now 注入的时刻。
+ * @param field 字段名。
+ * @returns ISO 串。
+ * @throws {InvalidRepositoryInputError} 不是有效 Date 时。
+ */
+function toIsoInstant(now: Date, field = 'now'): string {
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new InvalidRepositoryInputError(field, `${field} 必须是有效 Date`);
+  }
+  return now.toISOString();
+}
+
+/**
  * 校验非负整数。
  *
  * @param value 数值。
@@ -286,8 +377,7 @@ function requireLocalDate(value: string, field: string): string {
  * @returns 原值。
  * @throws {InvalidRepositoryInputError} 不是非负整数时。
  */
-function requireNonNegativeInteger(value: number, field: string): number {
-  if (!Number.isInteger(value) || value < 0) {
+function requireNonNegativeInteger(value: number, field: string): number {  if (!Number.isInteger(value) || value < 0) {
     throw new InvalidRepositoryInputError(field, `必须是非负整数，收到 ${String(value)}`);
   }
   return value;
@@ -473,6 +563,53 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       WHERE local_date >= ? AND local_date <= ?
       GROUP BY local_date
       ORDER BY local_date ASC`,
+  );
+  const EVENT_COLUMNS = `event_id, user_word_id, session_id, mode, prompt, answer, is_correct,
+                         recognition, stage_before, stage_after, answered_at, local_date, time_zone,
+                         duration_ms, device_id, synced_at`;
+  // 排序带 `event_id` 兜底：同一毫秒内的两条事件（批量导入/回放）也要有稳定次序，
+  // 否则 `finishSession` 的汇总在不同机器上可能得到不同的“最后一条”。
+  const selectEventsBySession = db.prepare(
+    `SELECT ${EVENT_COLUMNS} FROM learning_events
+      WHERE session_id = ?
+      ORDER BY answered_at ASC, event_id ASC`,
+  );
+  const selectEventsByDeck = db.prepare(
+    `SELECT ${EVENT_COLUMNS} FROM learning_events
+      WHERE deck_id = ? AND answered_at >= ? AND answered_at <= ?
+      ORDER BY answered_at ASC, event_id ASC`,
+  );
+  const selectSessionById = db.prepare(
+    `SELECT session_id, deck_id, started_at, ended_at, local_date, time_zone, new_count,
+            review_count, active_duration_ms, plan_snapshot_json, device_id, revision
+       FROM study_sessions
+      WHERE session_id = ?`,
+  );
+  /**
+   * 只写状态、不写作答结果。
+   *
+   * 与 `upsertState` 的差别只有一处：`DO UPDATE` 里**不碰** `last_result`。
+   * 抑制/恢复并没有“答对/答错”这回事，保留上一次的真实结果才是对的。
+   */
+  const upsertStateOnly = db.prepare(
+    `INSERT INTO learning_state
+       (user_word_id, deck_id, word_id, stage, due_at, last_reviewed_at, correct_count, wrong_count,
+        streak_correct, last_result, weight, suppressed_at, state_updated_at, device_id, revision)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 0)
+     ON CONFLICT (user_word_id) DO UPDATE SET
+       deck_id = excluded.deck_id,
+       word_id = excluded.word_id,
+       stage = excluded.stage,
+       due_at = excluded.due_at,
+       last_reviewed_at = excluded.last_reviewed_at,
+       correct_count = excluded.correct_count,
+       wrong_count = excluded.wrong_count,
+       streak_correct = excluded.streak_correct,
+       weight = excluded.weight,
+       suppressed_at = excluded.suppressed_at,
+       state_updated_at = excluded.state_updated_at,
+       device_id = excluded.device_id,
+       revision = learning_state.revision + 1`,
   );
 
   return {
@@ -662,6 +799,68 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
         wrong: row.wrong,
         activeMs: row.active_ms,
       }));
+    },
+
+    listEventsBySession(sessionId: string): LearningEventRecord[] {
+      requireNonEmptyString(sessionId, 'sessionId');
+      const rows = selectEventsBySession.all(sessionId) as LearningEventRow[];
+      return rows.map(toEventRecord);
+    },
+
+    listEventsByDeck(deckId: string, fromIso: string, toIso: string): LearningEventRecord[] {
+      requireNonEmptyString(deckId, 'deckId');
+      // 两端都用与写入完全相同的严格校验：`answered_at` 的区间比较是**字符串字典序**，
+      // 只要有一个端点用了别的写法（偏移、无毫秒、空格分隔），结果就会静默错位。
+      const from = requireIsoInstant(fromIso, 'fromIso');
+      const to = requireIsoInstant(toIso, 'toIso');
+      const rows = selectEventsByDeck.all(deckId, from, to) as LearningEventRow[];
+      return rows.map(toEventRecord);
+    },
+
+    updateState(state: LearningState, deviceId: string, now: Date): void {
+      assertValidState(state);
+      const device = requireNonEmptyString(deviceId, 'deviceId');
+      const nowIso = toIsoInstant(now, 'now');
+      const payload: LearningState = { ...state };
+
+      runInTransaction(
+        db,
+        () => {
+          // 刻意用独立语句而不是复用 `upsertState`：后者要求一个 `last_result`
+          // （CORRECT/WRONG），而“不再出现”这类状态变更根本没有作答结果。
+          // 复用会逼着我们编一个结果出来，直接污染“最近一次结果”的展示。
+          upsertStateOnly.run(
+            state.userWordId,
+            state.deckId,
+            state.wordId,
+            state.stage,
+            state.dueAt,
+            state.lastReviewedAt,
+            state.correctCount,
+            state.wrongCount,
+            state.streakCorrect,
+            state.weight,
+            state.suppressedAt,
+            nowIso,
+            device,
+          );
+
+          enqueueOutboxWithin(db, {
+            entityType: 'LEARNING_STATE',
+            entityId: state.userWordId,
+            operation: 'UPSERT',
+            payload,
+            createdAt: nowIso,
+          });
+        },
+        { mode: 'IMMEDIATE' },
+      );
+    },
+
+    getSession(sessionId: string): StudySessionRecord | null {
+      requireNonEmptyString(sessionId, 'sessionId');
+      const row = selectSessionById.get(sessionId) as StudySessionRow | undefined;
+      return row === undefined ? null : toSessionRecord(row);
     },
   };
 }

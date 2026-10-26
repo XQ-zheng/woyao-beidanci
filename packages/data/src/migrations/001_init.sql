@@ -272,6 +272,13 @@ CREATE TABLE IF NOT EXISTS frequency_entries (
   equal_count INTEGER NOT NULL DEFAULT 1 CHECK (equal_count >= 1),
   -- 当前生效语料的来源；重导时随主键行一起改写（它描述“这行是谁给的”，不是身份的一部分）。
   source_id TEXT NOT NULL REFERENCES sources (id),
+  -- ⚠️ **`created_at` 语义的例外**：§4.1 的通则是“created_at = 首次创建时间”，而本表按
+  -- (exam, corpus_version) **整卷替换**——重导时旧行被 DELETE、新行重新 INSERT，
+  -- 所以这里记的是“**本行最近一次导入的时间**”，不是首次创建时间。
+  -- 不做成“保留旧值”的理由：整卷替换时行是重建的，保留旧值没有语义，
+  -- 还会让 created_at 与 source_id/frequency 这些同样被覆盖的列互相矛盾
+  -- （同一行里一半是新语料的值、一半是旧语料的建行时间）。
+  -- 因此 `ON CONFLICT ... DO UPDATE` 里**不要**写 `created_at = frequency_entries.created_at`。
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   PRIMARY KEY (word_id, exam, corpus_version)
 );

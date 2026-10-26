@@ -326,6 +326,10 @@ describe('migrate：建表与幂等', () => {
       .filter((column) => column.pk > 0)
       .sort((left, right) => left.pk - right.pk)
       .map((column) => column.name);
+    // ⚠️ 这条断言**不可删**，它是 I1（主键不含 source_id）唯一的独立证据。
+    // 反向验证过：把主键改回四列后，repositories.test.ts 里那条“换来源重导读回 2 行”**仍然通过**——
+    // 因为 I2 在同一事务内按 (exam, corpus_version) 整段删除，旧行根本留不下来。
+    // 也就是说“只修 I2 不修 I1”能骗过读路径用例，只有这里的列集合断言能抓到。
     expect(pkColumns).toEqual(['word_id', 'exam', 'corpus_version']);
 
     const insert = db.prepare(

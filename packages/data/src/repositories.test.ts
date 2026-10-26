@@ -598,6 +598,9 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
     const rows = repo.listFrequencyEntries('CET4', 'ngsl-1.2');
 
     // 主键若含 source_id，这里会是 4 行（两个来源各一份），直接破坏“每词一行”的前提。
+    // ⚠️ 但本用例**不足以**单独证明 I1：把主键改回四列时它仍然通过，因为 I2 在同一事务内
+    // 按 (exam, corpus_version) 整段删除，旧来源的行根本留不下来。I1 的独立证据是
+    // migrations.test.ts 里那条「主键列集合」断言，那条不可删。
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.sourceId)).toEqual(['src-other', 'src-other']);
   });
@@ -622,6 +625,62 @@ describe('writeFrequencyCorpus：三条校验 + 整体回滚', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.wordId).toBe('w-abandon');
     expect(rows[0]?.sourceId).toBe('src-other');
+  });
+
+  it('重导在写入阶段失败（外键）时旧语料整体回滚，不留半份新语料', () => {
+    const db = createDatabase();
+    seedWords(db);
+    seedSource(db, 'src-other');
+    const repo = createWordRepository(db);
+    // 原语料：w-abandon(100) / w-ability(90)，来源 src-ngsl。
+    repo.writeFrequencyCorpus(
+      makeCorpus({
+        knownWordCount: 2,
+        entries: [
+          { wordId: 'w-abandon', frequency: 100, rank: 1, equalCount: 1 },
+          { wordId: 'w-ability', frequency: 90, rank: 2, equalCount: 1 },
+        ],
+      }),
+    );
+
+    // 新语料能过全部三条**内存校验**（词数 2、rank 连续、无并列），但第二行的 word_id 在库里不存在，
+    // 于是 INSERT 时才被外键拦下——这是“写入阶段失败”，与前面几条“校验阶段失败”是两条不同的路径。
+    // 关键点：第一行（w-abandon，frequency 改成 555、来源改成 src-other）在事务内是**写入成功**的，
+    // 所以回滚必须同时撤销“DELETE 旧行”和“这一行已经落地的 UPSERT”，不能只回滚失败的那一条。
+    const broken = makeCorpus({
+      sourceId: 'src-other',
+      knownWordCount: 2,
+      entries: [
+        { wordId: 'w-abandon', frequency: 555, rank: 1, equalCount: 1 },
+        { wordId: 'ghost-word', frequency: 90, rank: 2, equalCount: 1 },
+      ],
+    });
+
+    let thrown: unknown = null;
+    try {
+      repo.writeFrequencyCorpus(broken);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    // 先确认“确实抛了、抛的是外键约束”，否则后面的“数据没变”可能只是因为压根没执行。
+    expect(thrown).not.toBeNull();
+    expect((thrown as { code?: unknown }).code).toBe('SQLITE_CONSTRAINT_FOREIGNKEY');
+
+    const rows = repo.listFrequencyEntries('CET4', 'ngsl-1.2');
+    // 仍是原来那 2 行：既没被删光，也没被新语料顶替。
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => ({ wordId: row.wordId, frequency: row.frequency, sourceId: row.sourceId })))
+      .toEqual([
+        { wordId: 'w-abandon', frequency: 100, sourceId: 'src-ngsl' },
+        { wordId: 'w-ability', frequency: 90, sourceId: 'src-ngsl' },
+      ]);
+    expect(rows.map((row) => row.rank)).toEqual([1, 2]);
+    // 表里总行数也没变（整卷替换是 DELETE + 多条 INSERT，半份新语料最容易在这里露出来）。
+    expect(countRows(db, 'frequency_entries')).toBe(2);
+    const ghostRows = db
+      .prepare('SELECT COUNT(*) AS total FROM frequency_entries WHERE word_id = ?')
+      .get('ghost-word') as { total: number };
+    expect(ghostRows.total).toBe(0);
   });
 
   it('totalTokens 可为 null（来源没给出统计口径时不写 0 冒充）', () => {

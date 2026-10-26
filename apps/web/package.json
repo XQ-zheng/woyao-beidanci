@@ -1,0 +1,23 @@
+{
+  "name": "@woyao/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "我要背单词的共享 Web 界面（React + MUI + Tailwind）",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config ../../vite.config.ts",
+    "build": "vite build --config ../../vite.config.ts",
+    "preview": "vite preview --config ../../vite.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/material": "^9.5.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.4"
+  }
+}

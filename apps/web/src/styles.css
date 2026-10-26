@@ -1,0 +1,29 @@
+/*
+ * 样式分层约定：
+ * - MUI 主题（theme.ts）独占颜色、排版与组件样式；
+ * - Tailwind 只提供布局、间距等工具类，因此这里不引入 Tailwind 的 preflight，
+ *   避免它的全局重置与 MUI 的 CssBaseline 互相覆盖。
+ *
+ * 注意顺序：CSS 规定 @import 必须位于其他规则之前，所以 @config 放在导入之后，
+ * Tailwind 会在编译期统一收集这些指令。
+ */
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+/* 内容扫描范围收敛到 Web 应用源码，见 tailwind.config.ts。 */
+@config "../../../tailwind.config.ts";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: #ffffff;
+    color: #000000;
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "paths": {
+      "@woyao/core": ["./packages/core/src/index.ts"],
+      "@woyao/core/*": ["./packages/core/src/*"],
+      "@woyao/data": ["./packages/data/src/index.ts"],
+      "@woyao/data/*": ["./packages/data/src/*"],
+      "@woyao/services": ["./packages/services/src/index.ts"],
+      "@woyao/services/*": ["./packages/services/src/*"],
+      "@woyao/cloud": ["./packages/cloud/src/index.ts"],
+      "@woyao/cloud/*": ["./packages/cloud/src/*"],
+      "@woyao/exporters": ["./packages/exporters/src/index.ts"],
+      "@woyao/exporters/*": ["./packages/exporters/src/*"],
+      "@woyao/assets": ["./packages/assets/index.ts"],
+      "@woyao/assets/*": ["./packages/assets/*"],
+      "@woyao/web/*": ["./apps/web/src/*"],
+      "@woyao/electron": ["./apps/electron/src/index.ts"],
+      "@woyao/electron/*": ["./apps/electron/src/*"],
+      "@woyao/mobile": ["./apps/mobile/src/index.ts"],
+      "@woyao/mobile/*": ["./apps/mobile/src/*"]
+    }
+  }
+}

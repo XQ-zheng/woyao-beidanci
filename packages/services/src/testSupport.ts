@@ -34,6 +34,7 @@ import {
   asyncifyRepositories,
   createNoopCloud,
   type CloudPort,
+  type DocumentWriterPort,
   type HttpPort,
   type LlmPort,
   type NetworkMonitorPort,
@@ -88,6 +89,8 @@ export interface ServiceTestHarness {
 
 /** 播种义项时用到的字段（`sourceId` 由装配器统一补 `local-user`）。 */
 export interface SeedSense {
+  /** 义项序号（可缺省，数据层按 1..n 补）。 */
+  readonly senseNo?: number;
   readonly pos: string;
   readonly simpleZh: string;
   readonly detailedZh?: string | null;
@@ -108,6 +111,8 @@ export interface ServiceTestHarnessOptions {
   readonly network?: NetworkMonitorPort;
   /** 注入的云端端口（缺省：`createNoopCloud()`，即未配置）。 */
   readonly cloud?: CloudPort;
+  /** 注入的文档写出端口（缺省：会 throw 的假实现，导出测试必须显式注入）。 */
+  readonly writer?: DocumentWriterPort;
 }
 
 /**
@@ -161,6 +166,12 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
     },
     // 云端端口默认未配置（sync/auth 服务据此报 NOT_CONFIGURED）。
     cloud: options.cloud ?? createNoopCloud(),
+    // 文档写出端口默认“未注入”：导出测试必须显式给假 writer，防静默吞掉“没真写”。
+    writer: options.writer ?? {
+      write: async () => {
+        throw new Error('测试装配器未注入 writer');
+      },
+    },
   };
 
   const insertSource = db.prepare(
@@ -205,6 +216,7 @@ export function createServiceTestHarness(options: ServiceTestHarnessOptions = {}
         ownerScope: input.ownerScope ?? 'LOCAL',
         lemma: input.lemma,
         senses: senses.map((sense) => ({
+          ...(sense.senseNo === undefined ? {} : { senseNo: sense.senseNo }),
           pos: sense.pos,
           simpleZh: sense.simpleZh,
           detailedZh: sense.detailedZh ?? null,

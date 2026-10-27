@@ -17,6 +17,7 @@ export * from './authService';
 export * from './contentService';
 export * from './dto';
 export * from './errors';
+export * from './exportService';
 export * from './frequencyView';
 export * from './libraryService';
 export * from './onlineService';

@@ -497,6 +497,40 @@ export const resolveConflictInputSchema = z.strictObject({
   resolution: z.enum(['LOCAL_WINS', 'REMOTE_WINS']),
 });
 
+/** 导出文件格式。 */
+export const exportFormatSchema = z.enum(['WORD', 'PDF', 'EXCEL']);
+
+/** 导出历史的时间区间（两端都是 UTC ISO 毫秒，闭区间）。 */
+export const dateRangeSchema = z.strictObject({
+  fromIso: isoInstantSchema,
+  toIso: isoInstantSchema,
+});
+
+/** 导出历史入参。 */
+export const exportHistoryInputSchema = z.strictObject({
+  format: exportFormatSchema,
+  range: dateRangeSchema,
+  destination: z.string().trim().min(1, '导出路径不能为空'),
+});
+
+/** 导出词库入参。 */
+export const exportDeckInputSchema = z.strictObject({
+  format: exportFormatSchema,
+  deckId: z.string().min(1, '词库 id 不能为空'),
+  destination: z.string().trim().min(1, '导出路径不能为空'),
+  exam: z.string().min(1, '考试标签不能为空').optional(),
+  corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
+});
+
+/** 导出单词本入参。 */
+export const exportNotebookInputSchema = z.strictObject({
+  format: exportFormatSchema,
+  notebookId: z.string().min(1, '单词本 id 不能为空'),
+  destination: z.string().trim().min(1, '导出路径不能为空'),
+  exam: z.string().min(1, '考试标签不能为空').optional(),
+  corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
+});
+
 /** `AssociationKind` 的运行时品牌，便于服务层 import 类型而不用值。 */
 export type { AssociationKind } from '@woyao/data';
 

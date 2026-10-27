@@ -21,6 +21,10 @@ import type {
   WordRepository,
 } from '@woyao/data';
 
+// 仅类型引用：ExportModel/ExportReceipt 定义在 exportService.ts，这里是 type-only import，
+// 编译期擦除，不产生运行时环（exportService 运行时 import 本文件）。
+import type { ExportModel, ExportReceipt } from './exportService';
+
 /**
  * 把同步方法映射成返回 `Promise` 的异步方法。
  *
@@ -220,6 +224,19 @@ export function createNoopCloud(): CloudPort {
   return { configured: false, auth: null, sync: null };
 }
 
+/** 导出文件格式。 */
+export type ExportFormat = 'WORD' | 'PDF' | 'EXCEL';
+
+/**
+ * 文档写出端口（外壳注入，Task 8 提供 docx/exceljs/pdfkit 的真实实现）。
+ *
+ * 服务层只产出渲染器无关的 `ExportModel`，**不碰文件系统、不碰 node:*、不联网**；
+ * 是否真正写成功由本端口回报（`ExportReceipt`），服务层不伪造“已写出”。
+ */
+export interface DocumentWriterPort {
+  write(model: ExportModel, format: ExportFormat, destination: string): Promise<ExportReceipt>;
+}
+
 /** 服务运行上下文：所有服务共享这一份依赖。 */
 export interface ServiceContext {
   readonly repos: AsyncRepositories;
@@ -240,4 +257,6 @@ export interface ServiceContext {
   readonly network: NetworkMonitorPort;
   /** 云端端口（auth + sync）；未激活时注入 `createNoopCloud()`。 */
   readonly cloud: CloudPort;
+  /** 文档写出端口（导出服务用，Task 8 前注入假实现）。 */
+  readonly writer: DocumentWriterPort;
 }

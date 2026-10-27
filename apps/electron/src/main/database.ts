@@ -8,12 +8,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { createDocumentWriter } from '@woyao/exporters';
 import {
   asyncifyRepositories,
   createNoopCloud,
   createServiceRuntime,
-  NotConfiguredError,
-  type DocumentWriterPort,
   type HttpPort,
   type Services,
   type ServiceContext,
@@ -97,13 +96,20 @@ function createHttpPort(isOnline: () => boolean): HttpPort {
   };
 }
 
-/** 导出器尚未接入（Task 8）：明确抛 NOT_CONFIGURED，不假装写出了文件。 */
-function createPendingWriter(): DocumentWriterPort {
-  return {
-    async write() {
-      throw new NotConfiguredError('export', '本地导出器尚未接入（Task 8）');
-    },
-  };
+/**
+ * 定位随包附带的中文字体。
+ *
+ * 打包后字体在 `resources/fonts`；开发态直接读仓库里的 exporters/fonts。
+ * 找不到时不伪造成功——PDF 导出会在读字体时报错，Word/Excel 不受影响。
+ *
+ * @returns 字体路径。
+ */
+function findExportFontPath(): string {
+  const packaged = path.join(process.resourcesPath ?? '', 'fonts', 'NotoSansSC-Variable.ttf');
+  if (existsSync(packaged)) {
+    return packaged;
+  }
+  return path.join(__dirname, '../../../../packages/exporters/fonts/NotoSansSC-Variable.ttf');
 }
 
 /**
@@ -142,7 +148,7 @@ export function createDesktopRuntime(options: CreateDesktopRuntimeOptions): Desk
     network: { isOnline: options.isOnline },
     // 云服务在 Task 10 激活；现在注入的是“未配置”，服务层据此如实返回 NOT_CONFIGURED。
     cloud: createNoopCloud(),
-    writer: createPendingWriter(),
+    writer: createDocumentWriter({ fontPath: findExportFontPath() }),
   };
 
   const services = createServiceRuntime({ context, defaultTimeZone: timeZone });

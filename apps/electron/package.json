@@ -15,6 +15,7 @@
   "dependencies": {
     "@woyao/core": "*",
     "@woyao/data": "*",
+    "@woyao/exporters": "*",
     "@woyao/services": "*",
     "zod": "^4.6.7"
   },

@@ -4,6 +4,7 @@ import type { LearningState } from '@woyao/core';
 import type { EntityChange, LearningEventRecord } from '@woyao/data';
 
 import {
+  ServiceValidationError,
   createSyncService,
   type CloudPort,
   type PullPage,
@@ -117,6 +118,36 @@ describe('syncService：NOT_CONFIGURED', () => {
     expect(report.pushed).toBe(0);
     expect(report.pulled).toBe(0);
     expect(report.errorMessages).toEqual([]);
+  });
+});
+
+describe('syncService：accountId 守卫', () => {
+  it('cloud 已配置 + 不传 accountId → 抛 ServiceValidationError', async () => {
+    const cloud: CloudPort = { configured: true, auth: null, sync: fakeSync({}) };
+    const harness = createServiceTestHarness({ cloud });
+    harnesses.push(harness);
+    const service = createSyncService({ context: harness.context }); // 刻意不传 accountId
+
+    await expect(service.synchronize()).rejects.toBeInstanceOf(ServiceValidationError);
+  });
+
+  it('cloud 已配置 + 显式传 local → 同样被拒（匿名 local 不得用于已配置账号）', async () => {
+    const cloud: CloudPort = { configured: true, auth: null, sync: fakeSync({}) };
+    const harness = createServiceTestHarness({ cloud });
+    harnesses.push(harness);
+    const service = createSyncService({ context: harness.context, accountId: 'local' });
+
+    await expect(service.synchronize()).rejects.toBeInstanceOf(ServiceValidationError);
+  });
+
+  it('两个不同 accountId 的游标互不覆盖', async () => {
+    const harness = createServiceTestHarness();
+    harnesses.push(harness);
+    harness.sync.sync.setSyncState({ accountId: 'acct-a', cursor: 'ca', lastPullAt: null, schemaVersion: 1 });
+    harness.sync.sync.setSyncState({ accountId: 'acct-b', cursor: 'cb', lastPullAt: null, schemaVersion: 1 });
+
+    expect(harness.sync.sync.getSyncState('acct-a')?.cursor).toBe('ca');
+    expect(harness.sync.sync.getSyncState('acct-b')?.cursor).toBe('cb');
   });
 });
 
@@ -305,6 +336,60 @@ describe('syncService：pull（核心）', () => {
     const conflicts = harness.sync.sync.listOpenConflicts();
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]).toMatchObject({ entityType: 'WORD', entityId: 'w-x' });
+  });
+
+  it('拉取一条远端 LEARNING_EVENT 后 outbox 为空；第二次 synchronize pushed===0（无回显）', async () => {
+    const remote = makeRemoteEvent('evt-echo');
+    const { harness, service } = makeSync(
+      fakeSync({
+        pull: async () => ({
+          changes: [{ entityType: 'LEARNING_EVENT', entityId: 'evt-echo', operation: 'UPSERT', payload: remote, revision: 1, deviceId: 'remote-dev' }],
+          nextCursor: null,
+          hasMore: false,
+        }),
+      }),
+    );
+    seedDeckAndWord(harness);
+
+    const first = await service.synchronize();
+    expect(first.applied).toBe(1);
+    // 关键：落地时 enqueue 的回显行（LEARNING_EVENT + LEARNING_STATE）已被当场排空。
+    expect(harness.sync.sync.listOutbox()).toHaveLength(0);
+
+    const second = await service.synchronize();
+    // 第二次没有任何 outbox 可推（没有把上一条远端事件再推回远端）。
+    expect(second.pushed).toBe(0);
+  });
+
+  it('pull 第二页抛错 → PARTIAL、errors=1、游标停在成功页、已落地保留', async () => {
+    const remote = makeRemoteEvent('evt-p1');
+    let call = 0;
+    const { harness, service } = makeSync(
+      fakeSync({
+        pull: async () => {
+          call += 1;
+          if (call === 1) {
+            return {
+              changes: [{ entityType: 'LEARNING_EVENT', entityId: 'evt-p1', operation: 'UPSERT', payload: remote, revision: 1, deviceId: 'remote-dev' }],
+              nextCursor: 'c1',
+              hasMore: true,
+            };
+          }
+          throw new Error('pull boom');
+        },
+      }),
+    );
+    seedDeckAndWord(harness);
+
+    const report = await service.synchronize();
+
+    expect(report.status).toBe('PARTIAL');
+    expect(report.errors).toBe(1);
+    expect(report.errorMessages.join('')).toContain('pull 失败');
+    // 已落地的事件保留，不因第二页失败回滚。
+    expect(countRows(harness, 'learning_events')).toBe(1);
+    // 游标停在成功的第一页（c1），下次从 c1 继续，不会漏拉。
+    expect(harness.sync.sync.getSyncState('acct-1')?.cursor).toBe('c1');
   });
 });
 

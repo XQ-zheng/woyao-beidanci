@@ -14,6 +14,7 @@ import { toIsoInstant, type LearningState } from '@woyao/core';
 import type { LearningEventRecord } from '@woyao/data';
 
 import { parseOrThrow, resolveConflictInputSchema } from './dto';
+import { ServiceValidationError } from './errors';
 import type { PullPage, ServiceContext } from './ports';
 
 /** 一次同步的汇总报告。 */
@@ -51,9 +52,6 @@ export interface SyncServiceOptions {
 /** 同步游标的 schema 版本（同步协议变样时提升，防旧游标被误用）。 */
 const SYNC_SCHEMA_VERSION = 1;
 
-/** 未登录时的缺省账号 id。 */
-const DEFAULT_ACCOUNT_ID = 'local';
-
 /** 把任意异常压成一行可读文本。 */
 function describeError(error: unknown): string {
   if (error instanceof Error) {
@@ -70,7 +68,9 @@ function describeError(error: unknown): string {
  */
 export function createSyncService(options: SyncServiceOptions): SyncService {
   const { context } = options;
-  const accountId = options.accountId ?? DEFAULT_ACCOUNT_ID;
+  // 不在这里给缺省值：已配置账号时“没传”与“传了 local”都要被守卫拦下，
+  // 否则匿名 local 的游标会与某个真实账号的游标混用（I1）。
+  const accountId = options.accountId;
 
   return {
     async synchronize(): Promise<SyncReport> {
@@ -92,6 +92,19 @@ export function createSyncService(options: SyncServiceOptions): SyncService {
         };
       }
       const sync = context.cloud.sync;
+
+      // I1 守卫：已配置账号时，游标必须落到一个真实账号上；匿名 'local' 不得与账号共用。
+      if (accountId === undefined || accountId === 'local') {
+        throw new ServiceValidationError(
+          [
+            {
+              path: 'accountId',
+              message: "登录后必须显式传 accountId，匿名 'local' 不得用于已配置账号",
+            },
+          ],
+          '同步校验未通过',
+        );
+      }
 
       let pushed = 0;
       let duplicates = 0;
@@ -146,6 +159,11 @@ export function createSyncService(options: SyncServiceOptions): SyncService {
                 payload.event,
                 payload.state,
               );
+              // 落地会 enqueue 本地 outbox（LEARNING_EVENT + LEARNING_STATE）——那是“回显”，
+              // 必须在**当场**排空，不能等下一轮再推回远端（否则首次同步大量事件 = 2N 次无谓 push）。
+              if (result.outboxSeqs.length > 0) {
+                await context.repos.sync.deleteOutbox(result.outboxSeqs);
+              }
               if (result.applied) {
                 applied += 1;
               } else {
@@ -153,11 +171,13 @@ export function createSyncService(options: SyncServiceOptions): SyncService {
               }
             } else if (change.entityType === 'LEARNING_STATE') {
               // 状态快照直接 upsert；LWW 裁决延后到 Task 10。
-              await context.repos.learning.updateState(
+              const seq = await context.repos.learning.updateState(
                 change.payload as LearningState,
                 change.deviceId,
                 context.clock.now(),
               );
+              // 同上：回显的 LEARNING_STATE outbox 当场排空。
+              await context.repos.sync.deleteOutbox([seq]);
               applied += 1;
             } else {
               // 未支持的实体类型：登记冲突，不假装 applied、不静默丢弃。

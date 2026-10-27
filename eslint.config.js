@@ -181,6 +181,12 @@ export default tseslint.config(
     },
   },
   {
+    files: ['scripts/**/*.ts', 'packages/assets/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
+  {
     files: ['dev/*.mjs'],
     languageOptions: {
       globals: { ...globals.node, ...globals.browser },

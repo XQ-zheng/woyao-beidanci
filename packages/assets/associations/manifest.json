@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "assets": [],
+  "notes": [
+    "本目录不随仓库分发数据文件：许可未逐项核验前，安装包不得携带。",
+    "需要时由用户本地导入，并用 validate-assets / import-* 脚本校验 checksum 与许可。"
+  ]
+}

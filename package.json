@@ -18,7 +18,10 @@
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "npm run test --workspaces --if-present",
-    "verify:layout": "node dev/measure-layout.mjs"
+    "verify:layout": "node dev/measure-layout.mjs",
+    "validate:assets": "vite-node --config vite.config.ts scripts/validate-assets.ts",
+    "import:dictionary": "vite-node --config vite.config.ts scripts/import-dictionary.ts",
+    "import:frequency": "vite-node --config vite.config.ts scripts/import-frequency.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -42,6 +45,7 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.0",
     "vite": "^8.3.5",
+    "vite-node": "^6.0.0",
     "vitest": "^5.0.5"
   }
 }

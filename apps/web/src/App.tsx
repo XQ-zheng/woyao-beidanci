@@ -10,6 +10,7 @@ import type { Services } from '@woyao/services';
 
 import { APP_NAME } from './bootstrap';
 import { AppNavigation } from './components/AppNavigation';
+import { FontScaleSync } from './components/FontScaleSync';
 import { AppRoutes } from './router';
 import { ServiceProvider } from './services/ServiceProvider';
 import { appTheme } from './theme';
@@ -51,6 +52,7 @@ export function App({ services }: AppProps): ReactElement {
     <ThemeProvider theme={appTheme}>
       <CssBaseline />
       <ServiceProvider services={services ?? null}>
+        <FontScaleSync />
         <BrowserRouter>
           <AppShell />
         </BrowserRouter>

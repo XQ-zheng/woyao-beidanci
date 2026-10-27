@@ -144,8 +144,10 @@ export interface LearningRepository {
    * 用于“此单词不再出现”这类**没有对应事件**的状态变更：抑制不是一次作答，
    * 塞进 `appendEventAndUpdateState` 会凭空造出一条假事件、污染正确率与时长统计。
    * 同事务写一条 `LEARNING_STATE` 发件箱，保证状态变更能被同步。
+   *
+   * @returns 本次写入的那条 outbox 的 `seq`，供调用方（例如 sync 的 pull 落地）当场排空。
    */
-  updateState(state: LearningState, deviceId: string, now: Date): void;
+  updateState(state: LearningState, deviceId: string, now: Date): number;
   /**
    * 按 id 读一个会话（Task 5B 补）。
    *
@@ -832,13 +834,13 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       return rows.map(toEventRecord);
     },
 
-    updateState(state: LearningState, deviceId: string, now: Date): void {
+    updateState(state: LearningState, deviceId: string, now: Date): number {
       assertValidState(state);
       const device = requireNonEmptyString(deviceId, 'deviceId');
       const nowIso = toIsoInstant(now, 'now');
       const payload: LearningState = { ...state };
 
-      runInTransaction(
+      return runInTransaction(
         db,
         () => {
           // 刻意用独立语句而不是复用 `upsertState`：后者要求一个 `last_result`
@@ -860,7 +862,9 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
             device,
           );
 
-          enqueueOutboxWithin(db, {
+          // 返回该 outbox seq：同步 pull 落地后要**当场排空**，不能等下一轮 synchronize
+          // 再把它当本地新变更推回远端（那会形成 2N 次无谓回显 push）。
+          return enqueueOutboxWithin(db, {
             entityType: 'LEARNING_STATE',
             entityId: state.userWordId,
             operation: 'UPSERT',

@@ -1245,7 +1245,7 @@ describe('D-04：会话/词库事件查询、状态更新、来源与语料元�
     };
 
     const suppressed = { ...makeState({ wrongCount: 1 }), suppressedAt: LATER.toISOString() };
-    learning.updateState(suppressed, 'dev-1', LATER);
+    const suppressedSeq = learning.updateState(suppressed, 'dev-1', LATER);
 
     expect(countRows(db, 'learning_events')).toBe(before.events);
     expect(learning.getState('deck-1:w-1')).toEqual(suppressed);
@@ -1253,6 +1253,8 @@ describe('D-04：会话/词库事件查询、状态更新、来源与语料元�
     expect(outbox).toHaveLength(before.outbox + 1);
     expect(outbox[outbox.length - 1]?.entityType).toBe('LEARNING_STATE');
     expect(outbox[outbox.length - 1]?.createdAt).toBe(LATER.toISOString());
+    // 返回值 = 本次写入的 outbox seq（供 sync pull 落地后当场排空）。
+    expect(suppressedSeq).toBe(outbox[outbox.length - 1]?.seq);
     const after = db
       .prepare('SELECT revision, last_result FROM learning_state WHERE user_word_id = ?')
       .get('deck-1:w-1') as { revision: number; last_result: string | null };

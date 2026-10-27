@@ -1,0 +1,24 @@
+{
+  "name": "@woyao/electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "我要背单词的 Electron 桌面壳（主进程、preload 安全桥、托盘与自启）",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@woyao/core": "*",
+    "@woyao/data": "*",
+    "@woyao/services": "*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0"
+  }
+}

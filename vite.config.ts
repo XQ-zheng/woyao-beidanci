@@ -26,6 +26,9 @@ const rootManifest = JSON.parse(
 
 export default defineConfig({
   root: repoRoot,
+  // 产物要能被 Electron 用 file:// 直接打开：绝对路径 `/assets/...` 在 file:// 下会 404。
+  // 相对路径对网页部署同样有效（放到任意子路径下都能加载）。
+  base: './',
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(rootManifest.version),

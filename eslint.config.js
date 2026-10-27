@@ -37,6 +37,9 @@ const toolingConfigFiles = [
   '**/*.config.{js,mjs,cjs,ts,mts,cts}',
   'eslint.config.js',
   'apps/web/vitest.config.ts',
+  // 真实浏览器布局测量脚本：Node 侧跑 Playwright，回调体在页面里执行，
+  // 所以这个文件同时需要 Node 与浏览器全局。
+  'dev/*.mjs',
 ];
 
 export default tseslint.config(
@@ -175,6 +178,12 @@ export default tseslint.config(
     files: toolingConfigFiles,
     languageOptions: {
       globals: { ...globals.node },
+    },
+  },
+  {
+    files: ['dev/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
     },
   },
 );

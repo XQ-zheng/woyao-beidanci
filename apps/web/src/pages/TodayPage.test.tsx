@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Services } from '@woyao/services';
 
 import { ServiceProvider } from '../services/ServiceProvider';
-import { createFakeServices, makeDailyRow, makeDeck, makeSession } from '../test/fakeServices';
+import { createFakeServices, makeDailyRow, makeDeck, makeSession, makeSummary } from '../test/fakeServices';
 import TodayPage from './TodayPage';
 
 /** 固定时钟：本地日必须是 2026-10-27（Asia/Shanghai），不随跑测试的机器变化。 */
@@ -75,9 +75,10 @@ describe('TodayPage：进入学习', () => {
     expect(await screen.findByText('学习页占位')).toBeInTheDocument();
   });
 
-  it('今天没有待学卡片时留在今日页并说明原因', async () => {
+  it('今天没有待学卡片时留在今日页并说明原因，同时把空会话结束掉', async () => {
+    const finishSession = vi.fn(async () => makeSummary());
     const services = createFakeServices({
-      study: { startSession: vi.fn(async () => makeSession([])) },
+      study: { startSession: vi.fn(async () => makeSession([])), finishSession },
     });
     renderToday(services);
 
@@ -85,6 +86,7 @@ describe('TodayPage：进入学习', () => {
 
     expect(await screen.findByText(/今天没有待学习的单词/)).toBeInTheDocument();
     expect(screen.queryByText('学习页占位')).toBeNull();
+    await waitFor(() => expect(finishSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's-1' })));
   });
 
   it('没有词库时引导去词库页', async () => {

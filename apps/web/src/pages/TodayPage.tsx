@@ -165,6 +165,12 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
         now: nowRef.current(),
       });
       if (session.cards.length === 0) {
+        // startSession 已经写了一条会话行；0 卡就当场结束，避免历史里多出“0 作答”的空会话。
+        try {
+          await services.study.finishSession({ sessionId: session.sessionId, now: nowRef.current() });
+        } catch {
+          // 收尾失败不改变“今天没有待学词”的结论。
+        }
         setNotice('今天没有待学习的单词：新词已学完、复习也都没到期。可以调整每日计划或换个词库。');
         return;
       }

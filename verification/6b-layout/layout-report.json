@@ -1,0 +1,377 @@
+{
+  "url": "http://localhost:5173/dev/study-harness.html",
+  "at": "2026-10-27T14:03:56.128Z",
+  "viewports": [
+    {
+      "name": "desktop-1280x800",
+      "size": "1280x800",
+      "navVisible": false,
+      "checks": [
+        {
+          "name": "option-0-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-0",
+          "pass": true
+        },
+        {
+          "name": "option-0-vs-option-1",
+          "pass": true
+        },
+        {
+          "name": "option-0-vs-option-2",
+          "pass": true
+        },
+        {
+          "name": "option-0-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "option-1-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-1",
+          "pass": true
+        },
+        {
+          "name": "option-1-vs-option-2",
+          "pass": true
+        },
+        {
+          "name": "option-1-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "option-2-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-2",
+          "pass": true
+        },
+        {
+          "name": "option-2-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "option-3-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "no-fixed-bottom-nav-on-desktop",
+          "pass": true
+        },
+        {
+          "name": "no-horizontal-overflow",
+          "pass": true
+        },
+        {
+          "name": "recognition-0-min-height-44",
+          "pass": true
+        },
+        {
+          "name": "recognition-1-min-height-44",
+          "pass": true
+        },
+        {
+          "name": "next-button-min-height-44",
+          "pass": true
+        }
+      ],
+      "errors": [],
+      "beforeSelect": {
+        "options": [
+          {
+            "top": 212.8,
+            "bottom": 249.3,
+            "left": 265,
+            "right": 985,
+            "width": 720,
+            "height": 36.5
+          },
+          {
+            "top": 257.3,
+            "bottom": 293.8,
+            "left": 265,
+            "right": 985,
+            "width": 720,
+            "height": 36.5
+          },
+          {
+            "top": 301.8,
+            "bottom": 338.3,
+            "left": 265,
+            "right": 985,
+            "width": 720,
+            "height": 36.5
+          },
+          {
+            "top": 346.3,
+            "bottom": 382.8,
+            "left": 265,
+            "right": 985,
+            "width": 720,
+            "height": 36.5
+          }
+        ],
+        "actions": {
+          "top": 398.8,
+          "bottom": 442.8,
+          "left": 265,
+          "right": 985,
+          "width": 720,
+          "height": 44
+        },
+        "volumeSlider": {
+          "top": 167.4,
+          "bottom": 195.4,
+          "left": 441,
+          "right": 609,
+          "width": 168,
+          "height": 28
+        }
+      },
+      "afterSelect": {
+        "actionButtons": [
+          {
+            "top": 398.8,
+            "bottom": 442.8,
+            "left": 393,
+            "right": 481,
+            "width": 88,
+            "height": 44
+          },
+          {
+            "top": 398.8,
+            "bottom": 442.8,
+            "left": 489,
+            "right": 577,
+            "width": 88,
+            "height": 44
+          }
+        ]
+      },
+      "afterSubmit": {
+        "nextButton": {
+          "top": 530.8,
+          "bottom": 574.8,
+          "left": 265,
+          "right": 339,
+          "width": 74,
+          "height": 44
+        }
+      },
+      "overflowX": {
+        "scrollWidth": 1280,
+        "innerWidth": 1280
+      }
+    },
+    {
+      "name": "mobile-390x844",
+      "size": "390x844",
+      "navVisible": true,
+      "checks": [
+        {
+          "name": "option-0-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-0",
+          "pass": true
+        },
+        {
+          "name": "option-0-vs-option-1",
+          "pass": true
+        },
+        {
+          "name": "option-0-vs-option-2",
+          "pass": true
+        },
+        {
+          "name": "option-0-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "option-1-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-1",
+          "pass": true
+        },
+        {
+          "name": "option-1-vs-option-2",
+          "pass": true
+        },
+        {
+          "name": "option-1-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "option-2-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-2",
+          "pass": true
+        },
+        {
+          "name": "option-2-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "option-3-vs-actions",
+          "pass": true
+        },
+        {
+          "name": "volume-slider-vs-option-3",
+          "pass": true
+        },
+        {
+          "name": "next-button-above-fixed-bottom-nav",
+          "pass": true
+        },
+        {
+          "name": "actions-above-fixed-bottom-nav",
+          "pass": true
+        },
+        {
+          "name": "no-horizontal-overflow",
+          "pass": true
+        },
+        {
+          "name": "recognition-0-min-height-44",
+          "pass": true
+        },
+        {
+          "name": "recognition-1-min-height-44",
+          "pass": true
+        },
+        {
+          "name": "next-button-min-height-44",
+          "pass": true
+        }
+      ],
+      "errors": [],
+      "beforeSelect": {
+        "options": [
+          {
+            "top": 346.3,
+            "bottom": 382.8,
+            "left": 24,
+            "right": 366,
+            "width": 342,
+            "height": 36.5
+          },
+          {
+            "top": 390.8,
+            "bottom": 427.3,
+            "left": 24,
+            "right": 366,
+            "width": 342,
+            "height": 36.5
+          },
+          {
+            "top": 435.3,
+            "bottom": 471.8,
+            "left": 24,
+            "right": 366,
+            "width": 342,
+            "height": 36.5
+          },
+          {
+            "top": 479.8,
+            "bottom": 516.3,
+            "left": 24,
+            "right": 366,
+            "width": 342,
+            "height": 36.5
+          }
+        ],
+        "actions": {
+          "top": 532.3,
+          "bottom": 576.3,
+          "left": 24,
+          "right": 366,
+          "width": 342,
+          "height": 44
+        },
+        "volumeSlider": {
+          "top": 262.1,
+          "bottom": 290.1,
+          "left": 56,
+          "right": 264,
+          "width": 208,
+          "height": 28
+        }
+      },
+      "afterSelect": {
+        "actionButtons": [
+          {
+            "top": 532.3,
+            "bottom": 576.3,
+            "left": 152,
+            "right": 240,
+            "width": 88,
+            "height": 44
+          },
+          {
+            "top": 532.3,
+            "bottom": 576.3,
+            "left": 248,
+            "right": 336,
+            "width": 88,
+            "height": 44
+          }
+        ]
+      },
+      "afterSubmit": {
+        "nextButton": {
+          "top": 664.3,
+          "bottom": 708.3,
+          "left": 24,
+          "right": 98,
+          "width": 74,
+          "height": 44
+        }
+      },
+      "bottomScroll": {
+        "nav": {
+          "top": 788,
+          "bottom": 844,
+          "left": 0,
+          "right": 390,
+          "width": 390,
+          "height": 56
+        },
+        "next": {
+          "top": 664.3,
+          "bottom": 708.3,
+          "left": 24,
+          "right": 98,
+          "width": 74,
+          "height": 44
+        },
+        "actions": {
+          "top": 532.3,
+          "bottom": 576.3,
+          "left": 24,
+          "right": 366,
+          "width": 342,
+          "height": 44
+        }
+      },
+      "overflowX": {
+        "scrollWidth": 390,
+        "innerWidth": 390
+      }
+    }
+  ],
+  "passed": true
+}

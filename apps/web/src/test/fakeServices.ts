@@ -8,6 +8,7 @@
 import { vi } from 'vitest';
 import type {
   AnswerResult,
+  AssessmentView,
   CardView,
   DailyHistoryRow,
   DeckSummary,
@@ -129,6 +130,25 @@ export function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSum
   };
 }
 
+/** 造一份“样本不足”的评估（默认值：没有数据时不应显示分数）。 */
+export function makeAssessment(overrides: Partial<AssessmentView> = {}): AssessmentView {
+  return {
+    deckId: 'deck-cet4',
+    score: 0,
+    level: 'INSUFFICIENT_SAMPLE',
+    coverage: 0,
+    confidence: 0,
+    distinctWords: 0,
+    validAnswers: 0,
+    suggestions: ['先完成几轮学习，评估才有足够样本。'],
+    algorithmVersion: 'test-v1',
+    generatedAt: '2026-10-27T02:00:00.000Z',
+    windowStart: '2026-07-29T02:00:00.000Z',
+    windowEnd: '2026-10-27T02:00:00.000Z',
+    ...overrides,
+  };
+}
+
 /** 造一个词库摘要。 */
 export function makeDeck(overrides: Partial<DeckSummary> = {}): DeckSummary {
   return {
@@ -167,6 +187,8 @@ export interface FakeServiceOverrides {
   readonly study?: Partial<Services['study']>;
   readonly report?: Partial<Services['report']>;
   readonly content?: Partial<Services['content']>;
+  readonly auth?: Partial<Services['auth']>;
+  readonly sync?: Partial<Services['sync']>;
 }
 
 /**
@@ -215,7 +237,7 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
   };
 
   const report: Services['report'] = {
-    getAssessment: vi.fn(async () => notUsed('report.getAssessment')),
+    getAssessment: vi.fn(async () => makeAssessment()),
     getDailyHistory: vi.fn(async () => []),
     listSessions: vi.fn(async () => []),
     getMistakes: vi.fn(async () => []),
@@ -233,6 +255,31 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
     ...overrides.content,
   };
 
+  const auth: Services['auth'] = {
+    signIn: vi.fn(async () => notUsed('auth.signIn')),
+    refresh: vi.fn(async () => notUsed('auth.refresh')),
+    signOut: vi.fn(async () => notUsed('auth.signOut')),
+    ...overrides.auth,
+  };
+
+  const sync: Services['sync'] = {
+    // 缺省就是“云未配置”：这是本地优先应用在没有云端时的真实状态。
+    synchronize: vi.fn(async () => ({
+      startedAt: '2026-10-27T02:00:00.000Z',
+      endedAt: '2026-10-27T02:00:00.000Z',
+      pushed: 0,
+      duplicates: 0,
+      pulled: 0,
+      applied: 0,
+      conflicts: 0,
+      errors: 0,
+      status: 'NOT_CONFIGURED' as const,
+      errorMessages: [],
+    })),
+    resolveConflict: vi.fn(async () => notUsed('sync.resolveConflict')),
+    ...overrides.sync,
+  };
+
   // 未使用的服务不做实现：被调用就抛错，能立刻暴露“页面偷偷用了 6B 之外的能力”。
   const unused = new Proxy(
     {},
@@ -247,10 +294,11 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
     study,
     report,
     content,
+    auth,
+    sync,
     online: unused as unknown as Services['online'],
     association: unused as unknown as Services['association'],
-    sync: unused as unknown as Services['sync'],
-    auth: unused as unknown as Services['auth'],
+
     export: unused as unknown as Services['export'],
   };
 }

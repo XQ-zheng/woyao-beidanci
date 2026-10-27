@@ -90,6 +90,7 @@ function DesktopNavigation({ activePath }: { readonly activePath: string }): Rea
 function MobileNavigation({ activePath }: { readonly activePath: string }): ReactElement {
   return (
     <BottomNavigation
+      component="nav"
       value={activePath}
       showLabels
       aria-label="移动端导航"

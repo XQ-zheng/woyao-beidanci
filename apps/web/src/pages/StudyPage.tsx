@@ -55,6 +55,10 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
   const [revealed, setRevealed] = useState(false);
   const [feedback, setFeedback] = useState<AnswerResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  // state 要等 re-render 才生效，连点两下会在同一帧里都通过 `if (submitting)` 检查；
+  // 用 ref 在调用当帧就锁住。
+  const submitLock = useRef(false);
   const [cardShownAt, setCardShownAt] = useState<number>(() => now().getTime());
 
   // 时钟只作为“取当前时刻”的注入点，不参与依赖：避免默认 `() => new Date()` 每次渲染
@@ -75,17 +79,36 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
       return;
     }
     startRequested.current = true;
+    let active = true;
     void services.study
       .startSession({ deckId, now: nowRef.current() })
-      .then((view) => {
-        setSession(view);
+      .then(async (view) => {
+        if (view.cards.length === 0) {
+          // 0 张卡的会话没有任何记录价值；直接结束掉，避免历史里留下一条“0 作答”的空会话。
+          try {
+            await services.study.finishSession({ sessionId: view.sessionId, now: nowRef.current() });
+          } catch {
+            // 收尾失败不影响“没有卡片”这个事实，页面照样给出返回入口。
+          }
+        }
+        if (active) {
+          setSession(view);
+        }
       })
       .catch((cause: unknown) => {
-        setError(`开始学习失败：${describeError(cause)}`);
+        if (active) {
+          setError(`开始学习失败：${describeError(cause)}`);
+        }
       })
       .finally(() => {
-        setStarting(false);
+        if (active) {
+          setStarting(false);
+        }
       });
+
+    return () => {
+      active = false;
+    };
   }, [services, initialState, searchParams]);
 
   /** 未接入数据服务：只显示空态（PageShell 内部渲染 ServiceUnavailable）。 */
@@ -158,9 +181,10 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
    * REVEAL（含单选退化的 CHOICE）：没有可选项，“自报认识”即视为答对。
    */
   async function submit(recognition: 'KNOWN' | 'UNKNOWN'): Promise<void> {
-    if (submitting) {
+    if (submitLock.current) {
       return;
     }
+    submitLock.current = true;
     const isCorrect = choice ? selected === card.answer : recognition === 'KNOWN';
     const answeredAt = nowRef.current();
     setSubmitting(true);
@@ -183,6 +207,7 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
     } catch (cause: unknown) {
       setSubmitError(`提交作答失败：${describeError(cause)}`);
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   }
@@ -197,6 +222,10 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
       setCardShownAt(nowRef.current().getTime());
       return;
     }
+    if (finishing) {
+      return;
+    }
+    setFinishing(true);
     setSubmitError(null);
     try {
       const summary = await activeServices.study.finishSession({
@@ -206,6 +235,8 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
       navigate('/review', { state: { summary } });
     } catch (cause: unknown) {
       setSubmitError(`结束学习失败：${describeError(cause)}`);
+    } finally {
+      setFinishing(false);
     }
   }
 
@@ -284,8 +315,13 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
               showCumulativeWrongPrompt={feedback.showCumulativeWrongPrompt}
             />
             <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-              <Button variant="contained" onClick={() => void advance()} sx={{ minHeight: 44 }}>
-                {isLastCard ? '完成学习' : '下一题'}
+              <Button
+                variant="contained"
+                onClick={() => void advance()}
+                disabled={finishing}
+                sx={{ minHeight: 44 }}
+              >
+                {isLastCard ? (finishing ? '正在保存…' : '完成学习') : '下一题'}
               </Button>
             </Box>
           </>

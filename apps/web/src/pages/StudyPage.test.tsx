@@ -238,6 +238,22 @@ describe('StudyPage：认识/不认识是用户自报，不由正误推导', () 
   });
 });
 
+describe('StudyPage：防重入', () => {
+  it('同一帧内连点两次“认识”只提交一次', async () => {
+    const submitAnswer = vi.fn(async () => makeAnswerResult({ isCorrect: true }));
+    const services = createFakeServices({ study: { submitAnswer } });
+    renderStudy({ services });
+
+    fireEvent.click(screen.getByRole('button', { name: '放弃' }));
+    const know = screen.getByRole('button', { name: '认识' });
+    fireEvent.click(know);
+    fireEvent.click(know);
+
+    await screen.findByText('答对了');
+    expect(submitAnswer).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('StudyPage：会话结束', () => {
   it('卡耗尽后结束会话并带真实汇总跳到 /review', async () => {
     const finishSession = vi.fn(async () =>

@@ -187,11 +187,26 @@ export function WordCard({
     }
   }
 
+  /** 拖动过程中只改本地值：一次拖动会触发十几次 onChange，逐次落库既慢又可能乱序。 */
   function changeVolume(value: number): void {
     setVolume(value);
-    void services?.settings.update({ volume: value }).catch((error: unknown) => {
+  }
+
+  /** 松手/键盘调整结束后再持久化；失败则回滚到服务里的真实值，不留“界面 80%、库里 30%”。 */
+  async function commitVolume(value: number): Promise<void> {
+    try {
+      await services?.settings.update({ volume: value });
+    } catch (error: unknown) {
       setNotice(`音量保存失败：${describeError(error)}`);
-    });
+      try {
+        const snapshot = await services?.settings.getSnapshot();
+        if (snapshot !== undefined) {
+          setVolume(snapshot.volume);
+        }
+      } catch {
+        // 回读也失败时保留用户当前值，错误已经提示过一次，不再制造第二个错误。
+      }
+    }
   }
 
   const phoneticText = accent === 'uk' ? card.phoneticUk : card.phoneticUs;
@@ -259,6 +274,9 @@ export function WordCard({
             step={0.1}
             value={volume}
             onChange={(_, value) => changeVolume(typeof value === 'number' ? value : value[0])}
+            onChangeCommitted={(_, value) =>
+              void commitVolume(typeof value === 'number' ? value : value[0])
+            }
             aria-label="音量"
           />
         </Box>
@@ -266,7 +284,7 @@ export function WordCard({
           size="small"
           variant={favorite ? 'contained' : 'outlined'}
           onClick={() => void toggleFavorite()}
-          aria-label={favorite ? '取消收藏' : '收藏'}
+          aria-label={favorite ? '已收藏，点击取消收藏' : '收藏'}
           aria-pressed={favorite}
         >
           {favorite ? '已收藏' : '收藏'}

@@ -1,48 +1,21 @@
 import AppBar from '@mui/material/AppBar';
-import Box from '@mui/material/Box';
 import CssBaseline from '@mui/material/CssBaseline';
 import Divider from '@mui/material/Divider';
-import List from '@mui/material/List';
-import ListItemButton from '@mui/material/ListItemButton';
-import ListItemText from '@mui/material/ListItemText';
 import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import { ThemeProvider } from '@mui/material/styles';
 import type { ReactElement } from 'react';
-import { BrowserRouter, NavLink, useMatch } from 'react-router-dom';
+import { BrowserRouter } from 'react-router-dom';
+import type { Services } from '@woyao/services';
 
 import { APP_NAME } from './bootstrap';
+import { AppNavigation } from './components/AppNavigation';
 import { AppRoutes } from './router';
-import { appRoutes, type AppRoute } from './routes';
+import { ServiceProvider } from './services/ServiceProvider';
 import { appTheme } from './theme';
 
-function NavigationItem({ route }: { readonly route: AppRoute }): ReactElement {
-  // 用 router 自身的匹配结果判断选中，而不是比较 pathname 字符串：
-  // 后续出现 /today/xxx 这类子路由时，父级导航项依然保持高亮。
-  // `end: false` 表示允许匹配子路径。
-  const isActive = useMatch({ path: route.path, end: false }) !== null;
-
-  return (
-    <ListItemButton component={NavLink} to={route.path} selected={isActive}>
-      <ListItemText primary={route.label} />
-    </ListItemButton>
-  );
-}
-
-function AppNavigation(): ReactElement {
-  return (
-    <Box component="nav" aria-label="主要导航" className="p-2">
-      <List>
-        {appRoutes.map((route) => (
-          <NavigationItem key={route.path} route={route} />
-        ))}
-      </List>
-    </Box>
-  );
-}
-
 /**
- * 应用外壳：桌面为左侧栏，窄屏自动堆叠为顶部导航。
+ * 应用外壳：桌面为左侧栏 + 主内容区，移动为顶栏 + 固定底栏。
  * 布局用 Tailwind 工具类，视觉样式全部来自 MUI 主题。
  */
 function AppShell(): ReactElement {
@@ -56,23 +29,32 @@ function AppShell(): ReactElement {
             </Typography>
           </Toolbar>
         </AppBar>
-        <AppNavigation />
+        <AppNavigation variant="desktop" />
       </header>
       <Divider orientation="vertical" flexItem className="hidden md:block" />
-      <main className="flex-1 p-6">
+      <main className="flex-1 p-6 pb-24 md:pb-6">
         <AppRoutes />
       </main>
+      <AppNavigation variant="mobile" />
     </div>
   );
 }
 
-export function App(): ReactElement {
+/** 应用入口入参。 */
+export interface AppProps {
+  /** 数据服务；缺省 `null`（浏览器 dev 预览阶段未接入，页面显示空态）。 */
+  readonly services?: Services | null;
+}
+
+export function App({ services }: AppProps): ReactElement {
   return (
     <ThemeProvider theme={appTheme}>
       <CssBaseline />
-      <BrowserRouter>
-        <AppShell />
-      </BrowserRouter>
+      <ServiceProvider services={services ?? null}>
+        <BrowserRouter>
+          <AppShell />
+        </BrowserRouter>
+      </ServiceProvider>
     </ThemeProvider>
   );
 }

@@ -23,6 +23,7 @@ export * from './libraryService';
 export * from './onlineService';
 export * from './ports';
 export * from './reportService';
+export * from './runtime';
 export * from './settingsService';
 export * from './sourceBootstrap';
 export * from './studyService';

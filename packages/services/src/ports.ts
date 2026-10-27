@@ -13,6 +13,8 @@
 
 import type { Clock } from '@woyao/core';
 import type {
+  AssociationRepository,
+  ContentCacheRepository,
   EntityChange,
   EntityType,
   LearningRepository,
@@ -28,7 +30,7 @@ import type { ExportModel, ExportReceipt } from './exportService';
 /**
  * 把同步方法映射成返回 `Promise` 的异步方法。
  *
- * 只映射方法（`T[K]` 是函数）的键；非方法键在本仓库的四个仓储里不存在，
+ * 只映射方法（`T[K]` 是函数）的键；非方法键在本仓库的仓储里不存在，
  * 但保留这条过滤可以让「以后给仓储加个常量」不会静默变成 `never`。
  */
 export type Asyncify<T> = {
@@ -39,20 +41,24 @@ export type Asyncify<T> = {
     : never;
 };
 
-/** 四个仓储的异步视图。 */
+/** 六个仓储的异步视图。 */
 export interface AsyncRepositories {
   readonly words: Asyncify<WordRepository>;
   readonly learning: Asyncify<LearningRepository>;
   readonly sync: Asyncify<SyncRepository>;
   readonly settings: Asyncify<SettingsRepository>;
+  readonly associations: Asyncify<AssociationRepository>;
+  readonly contentCache: Asyncify<ContentCacheRepository>;
 }
 
-/** 同步仓储集合（`@woyao/data` 的四个工厂产出）。 */
+/** 同步仓储集合（`@woyao/data` 的六个工厂产出）。 */
 export interface SyncRepositories {
   readonly words: WordRepository;
   readonly learning: LearningRepository;
   readonly sync: SyncRepository;
   readonly settings: SettingsRepository;
+  readonly associations: AssociationRepository;
+  readonly contentCache: ContentCacheRepository;
 }
 
 /**
@@ -85,8 +91,8 @@ function asyncifyMethods<T extends object>(source: T): Asyncify<T> {
  * 每个仓储各自包装，**不共享**任何可变状态：包装层只做转发，
  * 事务边界仍然由数据层的方法自己控制（服务层不再套一层事务）。
  *
- * @param input 四个同步仓储。
- * @returns 四个异步仓储。
+ * @param input 六个同步仓储。
+ * @returns 六个异步仓储。
  */
 export function asyncifyRepositories(input: SyncRepositories): AsyncRepositories {
   return {
@@ -94,12 +100,17 @@ export function asyncifyRepositories(input: SyncRepositories): AsyncRepositories
     learning: asyncifyMethods(input.learning),
     sync: asyncifyMethods(input.sync),
     settings: asyncifyMethods(input.settings),
+    associations: asyncifyMethods(input.associations),
+    contentCache: asyncifyMethods(input.contentCache),
   };
 }
 
 /**
- * 把任意同步仓储包成异步视图（供 `associationRepository` / `contentCacheRepository`
- * 这两个**没有进入 `AsyncRepositories`** 的仓储使用）。
+ * 把任意同步仓储包成异步视图。
+ *
+ * `associationRepository` / `contentCacheRepository` 已进入 `AsyncRepositories`
+ * （6A 装配 `contentService` / `associationService` 需要），但本工具仍保留给
+ * 测试里单独包装某个仓储的场合。
  *
  * @param source 同步仓储。
  * @returns 只含同名异步方法的对象。

@@ -14,6 +14,7 @@ import type { SettingsSnapshot } from '@woyao/services';
 import { IPC_CHANNELS } from '../shared/channels';
 import { APP_ENTRY_URL, registerAppScheme, serveAppProtocol } from './appProtocol';
 import { applyAutoStart } from './autoLaunch';
+import { applyDataDir, resolveDataDir } from './dataLocation';
 import { createDesktopRuntime, type DesktopRuntime } from './database';
 import { createIpcRouter } from './ipc';
 import { createTray, destroyTray } from './tray';
@@ -104,6 +105,10 @@ let minimizeToTray = false;
 
 // 先定应用名：`userData` 目录由它推导，包名带 scope（@woyao/electron）会生成难读的路径。
 app.setName('woyao-beidanci');
+// 数据目录重定向（必须在 app.ready 之前、任何 getPath('userData') 之前）：
+// 默认 E:\我要背单词——相关文件夹（见 dataLocation.ts 的解析优先级）。
+// 数据库、日志、凭据、Local Storage 全部跟随这一处。
+applyDataDir(resolveDataDir());
 // 任务栏分组/固定到任务栏后的图标归属：不设的话 Windows 会把窗口当成 electron.exe 的。
 app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
 // 清掉 Electron 自带的英文默认菜单（File/Edit/View/Window）：消费级应用窗口只应有内容，
@@ -152,6 +157,11 @@ if (!hasLock) {
         services: created.services,
         clock: created.context.clock,
         getWindow: () => mainWindow,
+        closeDatabase: () => {
+          // 数据迁移前关库：close() 会触发 WAL checkpoint，保证复制的库完整。
+          runtime?.close();
+          runtime = null;
+        },
       });
       for (const channel of IPC_CHANNELS) {
         ipcMain.handle(channel, async (_event, payload: unknown) => {

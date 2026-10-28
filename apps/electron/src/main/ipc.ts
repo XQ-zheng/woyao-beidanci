@@ -10,11 +10,17 @@
  *    不接受渲染进程自报时间——否则改系统时间就能把复习排期写乱。
  */
 import { z } from 'zod';
-import type { BrowserWindow } from 'electron';
+import path from 'node:path';
+import { app, dialog, type BrowserWindow } from 'electron';
 import type { Clock } from '@woyao/core';
 import type { OcrEnhancer } from '@woyao/importer';
 import { ServiceError, type Services } from '@woyao/services';
 
+import {
+  ensureWritableDir,
+  migrateDataFiles,
+  writeLocationHint,
+} from './dataLocation';
 import { extractTermsFromFile, pickImportFile } from './importer';
 import { IPC_CHANNELS, type IpcChannel } from '../shared/channels';
 
@@ -41,6 +47,8 @@ export interface IpcRouterOptions {
   readonly getWindow?: () => BrowserWindow | null;
   /** 图片 OCR 的云端增强回调（可选；不传则纯本地 OCR）。 */
   readonly ocrEnhancer?: OcrEnhancer;
+  /** 关闭数据库连接（数据迁移前调用，让 WAL checkpoint 落盘）。 */
+  readonly closeDatabase?: () => void;
 }
 
 /** 一条路由：入参 schema + 处理函数。 */
@@ -85,6 +93,7 @@ export function createIpcRouter({
   clock,
   getWindow,
   ocrEnhancer,
+  closeDatabase,
 }: IpcRouterOptions): (channel: string, payload: unknown) => Promise<IpcResult> {
   const now = (): Date => clock.now();
 
@@ -196,6 +205,55 @@ export function createIpcRouter({
     'settings.update': {
       schema: z.record(z.string(), z.unknown()),
       run: async (payload) => services.settings.update(payload as Parameters<Services['settings']['update']>[0]),
+    },
+    'settings.getDataLocation': {
+      schema: z.undefined(),
+      run: async () => ({ dataDir: app.getPath('userData') }),
+    },
+    'settings.pickDataFolder': {
+      schema: z.undefined(),
+      run: async () => {
+        const result = await dialog.showOpenDialog(getWindow?.() ?? (undefined as never), {
+          title: '选择新的数据储存位置',
+          properties: ['openDirectory', 'createDirectory'],
+          defaultPath: app.getPath('userData'),
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+          return null;
+        }
+        return result.filePaths[0] ?? null;
+      },
+    },
+    'settings.changeDataLocation': {
+      schema: z.object({ newPath: z.string().min(1) }),
+      run: async (payload) => {
+        const newPath = (payload as { newPath: string }).newPath;
+        const currentDir = app.getPath('userData');
+        if (path.resolve(newPath) === path.resolve(currentDir)) {
+          throw new ServiceError('VALIDATION_FAILED', '新位置与当前位置相同。');
+        }
+        const writable = ensureWritableDir(newPath);
+        if (writable !== null) {
+          throw new ServiceError('VALIDATION_FAILED', `新位置不可用：${writable}`);
+        }
+        // 迁移前必须先关数据库（WAL checkpoint 落盘），否则复制的库会缺最新写入。
+        closeDatabase?.();
+        const report = migrateDataFiles(currentDir, newPath);
+        if (typeof report === 'string') {
+          throw new ServiceError('PROVIDER_ERROR', `${report}（重启应用后可重试；旧数据完好）`);
+        }
+        // 写引导文件：下次启动按新位置读数据。
+        writeLocationHint(newPath);
+        return report;
+      },
+    },
+    'settings.relaunchApp': {
+      schema: z.undefined(),
+      run: async () => {
+        app.relaunch();
+        app.exit(0);
+        return null;
+      },
     },
     'settings.loadReviewPlan': {
       schema: z.undefined(),

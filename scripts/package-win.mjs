@@ -48,9 +48,16 @@ const buildRoot = path.join(repoRoot, 'build');
 /** 组装目录：先在 build 下拼好，成功了再整体覆盖到安装目录。 */
 const stagingDir = path.join(buildRoot, 'package', 'woyao-beidanci');
 
-/** 安装目录：纯 ASCII 路径，避开中文目录带来的诡异问题。 */
+/** 用户指定的软件根目录（程序 + 数据都在这里，为 C 盘腾空间）。 */
+const PREFERRED_ROOT = 'E:\\我要背单词——相关文件夹';
+
+/** 安装目录：优先用户指定（WOYAO_INSTALL_DIR）；其次 E 盘软件根目录下的「程序」；否则退回 C 盘。 */
 const installDir =
-  process.env.WOYAO_INSTALL_DIR ?? path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'woyao-beidanci');
+  process.env.WOYAO_INSTALL_DIR ??
+  (existsSync('E:\\') ? path.join(PREFERRED_ROOT, '程序') : path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'woyao-beidanci'));
+
+/** 默认数据目录（写入 resources/data-location.json，主进程启动时读取）。 */
+const preferredDataDir = existsSync('E:\\') ? PREFERRED_ROOT : null;
 
 /** 安装后的可执行文件名（由 electron.exe 改名而来）。 */
 const APP_EXE_NAME = 'woyao-beidanci.exe';
@@ -615,6 +622,21 @@ function assembleApp(closure) {
     path.join(repoRoot, 'packages', 'importer', 'assets', 'tessdata', 'eng.traineddata.gz'),
     path.join(tessdataDir, 'eng.traineddata.gz'),
   );
+
+  // 8) 数据位置引导文件：主进程启动最早读它，把 userData 重定向过去。
+  //    默认 = 软件根目录（E:\我要背单词——相关文件夹）；用户在设置里改过则由
+  //    changeDataLocation 重写这个文件。
+  const dataLocationFile = path.join(stagingDir, 'resources', 'data-location.json');
+  if (preferredDataDir !== null) {
+    writeFileSync(
+      dataLocationFile,
+      `${JSON.stringify({ dataDir: preferredDataDir }, null, 2)}\n`,
+      'utf8',
+    );
+  } else if (!existsSync(dataLocationFile)) {
+    // C 盘兜底场景：没有引导文件 = 用 Electron 默认（%APPDATA%\woyao-beidanci）。
+    console.log('  （E 盘不可用，数据位置沿用 C 盘默认）');
+  }
 }
 
 /**

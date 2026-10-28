@@ -22,6 +22,7 @@ import {
 import type { TrainingMode } from '@woyao/core';
 
 import { useServiceData } from '../hooks/useServiceData';
+import DataLocationSection from '../components/DataLocationSection';
 import { applyFontScale } from '../lib/fontScale';
 import { questionStyleLabel, trainingModeLabel } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
@@ -84,11 +85,13 @@ function parseIntervals(value: string): number[] | string {
   return numbers;
 }
 
-/** 设置页（`/settings`）：计划、学习偏好、外观与桌面行为。 */
+/** 设置页（`/settings`）：计划、学习偏好、外观、桌面行为与数据储存位置。 */
 export default function SettingsPage(): ReactElement {
   const services = useServices();
   const snapshot = useServiceData('settings', (service) => service.settings.getSnapshot());
   const windows = useServiceData('study-windows', (service) => service.settings.listStudyWindows());
+  // 数据位置属桌面能力，直接走 preload 桥（与 ImportWordsDialog 同一模式）。
+  const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } }).woyao ?? null;
 
   const [draft, setDraft] = useState<SettingsSnapshot | null>(null);
   const [intervalsText, setIntervalsText] = useState('');
@@ -357,6 +360,10 @@ export default function SettingsPage(): ReactElement {
             这两项只在桌面端生效；网页预览里保存的是偏好，不会真的改系统的自启项。
           </Typography>
         </Box>
+
+        <Divider />
+
+        <DataLocationSection bridge={bridge} />
 
         <Divider />
 

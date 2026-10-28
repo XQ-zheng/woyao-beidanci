@@ -94,7 +94,7 @@ describe('signInWithPhoneOtp：已注册手机号登录', () => {
     expect(calls[0]?.url).toBe('https://example.test/.cloud/auth/v1/verification/verify');
     expect(calls[0]?.body).toEqual({ verification_id: 'ch-1', verification_code: '123456' });
     expect(calls[1]?.url).toBe('https://example.test/.cloud/auth/v1/signin');
-    expect(calls[1]?.body).toEqual({ phone_number: '13790758356', verification_token: 'vt-1' });
+    expect(calls[1]?.body).toEqual({ phone_number: '+86 13790758356', verification_token: 'vt-1' });
   });
 
   it('phone_number 被拒时按序换下一个字段写法', async () => {
@@ -112,7 +112,7 @@ describe('signInWithPhoneOtp：已注册手机号登录', () => {
 
     expect(result.variant).toBe('phone');
     expect(calls).toHaveLength(3);
-    expect(calls[2]?.body).toEqual({ phone: '13790758356', verification_token: 'vt-1' });
+    expect(calls[2]?.body).toEqual({ phone: '+86 13790758356', verification_token: 'vt-1' });
   });
 
   it('所有登录写法都被拒时用注册补完整并返回 signup', async () => {
@@ -120,8 +120,6 @@ describe('signInWithPhoneOtp：已注册手机号登录', () => {
       json(200, { verification_token: 'vt-1' }),
       json(401, { error: 'invalid_grant' }),
       json(404, { error: 'not_found' }),
-      json(400, { error: 'invalid_argument' }),
-      json(400, { error: 'invalid_argument' }),
       json(400, { error: 'invalid_argument' }),
       json(200, SESSION_BODY),
     ]);
@@ -134,7 +132,7 @@ describe('signInWithPhoneOtp：已注册手机号登录', () => {
 
     expect(result.variant).toBe('signup');
     expect(calls.at(-1)?.url).toBe('https://example.test/.cloud/auth/v1/signup');
-    expect(calls.at(-1)?.body).toEqual({ verification_token: 'vt-1', phone_number: '13790758356' });
+    expect(calls.at(-1)?.body).toEqual({ verification_token: 'vt-1', phone_number: '+86 13790758356' });
   });
 
   it('验码被拒时抛出服务端原因，不再尝试登录', async () => {
@@ -155,8 +153,6 @@ describe('signInWithPhoneOtp：已注册手机号登录', () => {
   it('全部失败时抛出的错误带上最后一次服务端原因', async () => {
     const { fetch } = sequenceFetch([
       json(200, { verification_token: 'vt-1' }),
-      json(401, { error: 'invalid_grant', error_description: 'the session is invalid' }),
-      json(401, { error: 'invalid_grant', error_description: 'the session is invalid' }),
       json(401, { error: 'invalid_grant', error_description: 'the session is invalid' }),
       json(401, { error: 'invalid_grant', error_description: 'the session is invalid' }),
       json(401, { error: 'invalid_grant', error_description: 'the session is invalid' }),

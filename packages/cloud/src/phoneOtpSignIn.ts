@@ -195,6 +195,10 @@ export async function signInWithPhoneOtp(
   input: PhoneOtpSignInInput,
 ): Promise<PhoneOtpSignInResult> {
   const phone = toBarePhone(input.phone);
+  // 服务端要求手机号是「+国家码 + 空格 + 号码」的国际格式（正则
+  // `^\+[1-9][0-9]{0,3}\s[0-9]{4,20}$`），裸号会被 Cognito 拒绝。
+  // 发码时 SDK 用 normalizePhone 产出的正是这个格式，登录/注册必须保持一致。
+  const intlPhone = `+86 ${phone}`;
   const trace = options.trace ?? ((): void => undefined);
 
   const verified = await postJson(options, '/v1/verification/verify', {
@@ -211,16 +215,14 @@ export async function signInWithPhoneOtp(
     throw new Error('验码通过但服务端没有返回 verification_token');
   }
 
-  // 逐档尝试：手机号账号没有 username，优先用 phone_number / phone。
+  // 逐档尝试。实测（假 token 探测）：
+  // - `username` → 404 "User not exist"（手机号账号没有 username，SDK 正是栽在这）
+  // - `phone_number` / `phone` → 400 "malformed jwt"（字段名对，轮到 token 校验）
+  // 所以正确字段是 phone_number / phone，且必须带 +86 空格格式。
   const variants: ReadonlyArray<{ readonly label: string; readonly body: Record<string, string> }> = [
-    { label: 'phone_number', body: { phone_number: phone, verification_token: verificationToken } },
-    { label: 'phone', body: { phone, verification_token: verificationToken } },
-    {
-      label: 'phone_number(+86)',
-      body: { phone_number: `+86 ${phone}`, verification_token: verificationToken },
-    },
-    { label: 'username(bare)', body: { username: phone, verification_token: verificationToken } },
-    { label: 'username(+86)', body: { username: `+86 ${phone}`, verification_token: verificationToken } },
+    { label: 'phone_number', body: { phone_number: intlPhone, verification_token: verificationToken } },
+    { label: 'phone', body: { phone: intlPhone, verification_token: verificationToken } },
+    { label: 'username(+86)', body: { username: intlPhone, verification_token: verificationToken } },
   ];
 
   let lastReason = '';
@@ -236,10 +238,10 @@ export async function signInWithPhoneOtp(
     lastReason = attempt.reason ?? `HTTP ${String(attempt.status)}`;
   }
 
-  // 兜底注册：万一账号在半步失败的中间态，注册能把它补完整。
+  // 兜底注册：万一账号在半步失败的中间态，注册能把它补完整（同样用国际格式）。
   const signup = await postJson(options, '/v1/signup', {
     verification_token: verificationToken,
-    phone_number: phone,
+    phone_number: intlPhone,
   });
   trace(`signup ${String(signup.status)}${signup.reason === null ? '' : ` ${signup.reason}`}`);
   if (signup.status >= 200 && signup.status < 300) {

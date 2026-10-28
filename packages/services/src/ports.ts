@@ -182,15 +182,41 @@ export interface AuthSession {
   readonly expiresAt: string | null;
 }
 
-/** 登录方式。 */
-export interface SignInInput {
-  readonly provider: 'email' | 'phone' | 'wechat' | 'qq';
-  readonly credential: string;
+/** 一次性验证码渠道。 */
+export type OtpChannel = 'phone' | 'email';
+
+/** 发码请求。 */
+export interface OtpRequest {
+  readonly channel: OtpChannel;
+  /** 手机号（11 位大陆号码）或邮箱。 */
+  readonly target: string;
 }
 
-/** 认证网关（外壳注入的云端认证实现；WorkBuddy Cloud 未激活时为 `null`）。 */
+/** 发码结果。 */
+export interface OtpChallengeView {
+  /** 后续验码要带回来的挑战 id。 */
+  readonly challengeId: string;
+  /** 上游判断的“是否已注册”，决定验码后走登录还是注册。 */
+  readonly isExistingUser: boolean;
+}
+
+/** 验码请求。 */
+export interface OtpVerifyInput extends OtpRequest {
+  readonly challengeId: string;
+  readonly isExistingUser: boolean;
+  readonly token: string;
+}
+
+/**
+ * 认证网关（外壳注入的云端认证实现；WorkBuddy Cloud 未激活时为 `null`）。
+ *
+ * 只支持 WorkBuddy Cloud 真实提供的方式：手机/邮箱 OTP 与网页 OAuth（微信/WorkBuddy）。
+ * **没有 QQ Provider**，不要在这里加 `'qq'` 让实现去猜。
+ */
 export interface AuthGateway {
-  signIn(input: SignInInput): Promise<AuthSession>;
+  requestOtp(input: OtpRequest): Promise<OtpChallengeView>;
+  verifyOtp(input: OtpVerifyInput): Promise<AuthSession>;
+  getSession(): Promise<AuthSession | null>;
   refresh(session: AuthSession): Promise<AuthSession>;
   signOut(session: AuthSession): Promise<void>;
 }

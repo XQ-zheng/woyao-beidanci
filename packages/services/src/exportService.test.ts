@@ -279,7 +279,13 @@ describe('exportService：离线', () => {
       writer,
       cloud: {
         configured: true,
-        auth: { signIn: boom, refresh: boom, signOut: boom },
+        auth: {
+          requestOtp: boom,
+          verifyOtp: boom,
+          getSession: boom,
+          refresh: boom,
+          signOut: boom,
+        },
         sync: { push: boom, pull: boom },
       },
       http: { getJson: boom, getText: boom },

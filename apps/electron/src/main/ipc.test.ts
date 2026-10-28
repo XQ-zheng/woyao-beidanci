@@ -35,7 +35,23 @@ function createFakeServices(overrides: Partial<Record<keyof Services, unknown>> 
     },
     report: { getAssessment: vi.fn(async () => ({ score: 0 })) },
     content: { getPronunciation: vi.fn(async () => ({ url: null })) },
-    auth: { signIn: vi.fn(async () => ({ userId: 'u-1' })) },
+    auth: {
+      requestOtp: vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true })),
+      verifyOtp: vi.fn(async () => ({
+        userId: 'u-1',
+        token: 'tok',
+        refreshToken: 'refresh',
+        expiresAt: null,
+      })),
+      getSession: vi.fn(async () => null),
+      refresh: vi.fn(async () => ({
+        userId: 'u-1',
+        token: 'tok',
+        refreshToken: 'refresh',
+        expiresAt: null,
+      })),
+      signOut: vi.fn(async () => undefined),
+    },
     sync: { synchronize: vi.fn(async () => ({ status: 'NOT_CONFIGURED' })) },
     online: unused,
     association: unused,
@@ -126,6 +142,25 @@ describe('IPC 路由：时间由主进程给', () => {
         durationMs: 1200,
       }),
     );
+  });
+});
+
+describe('IPC 路由：两段式登录', () => {
+  it('auth.requestOtp 走服务层，QQ 渠道被 schema 拒绝', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true }));
+    const services = createFakeServices({ auth: { requestOtp } });
+    const router = createIpcRouter({ services, clock });
+
+    const ok = await router('auth.requestOtp', { channel: 'phone', target: '13800138000' });
+    expect(ok).toStrictEqual({ ok: true, data: { challengeId: 'ch-1', isExistingUser: true } });
+    expect(requestOtp).toHaveBeenCalledWith({ channel: 'phone', target: '13800138000' });
+
+    const rejected = await router('auth.requestOtp', { channel: 'qq', target: '12345' });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) {
+      expect(rejected.error.code).toBe('VALIDATION_FAILED');
+    }
+    expect(requestOtp).toHaveBeenCalledTimes(1);
   });
 });
 

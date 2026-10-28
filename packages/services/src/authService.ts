@@ -10,11 +10,24 @@
  */
 
 import { NotConfiguredError } from './errors';
-import type { AuthSession, ServiceContext, SignInInput } from './ports';
+import type {
+  AuthSession,
+  OtpChallengeView,
+  OtpRequest,
+  OtpVerifyInput,
+  ServiceContext,
+} from './ports';
 
-/** 认证服务契约。 */
+/**
+ * 认证服务契约。
+ *
+ * 登录是两段式：先 `requestOtp` 拿挑战，再 `verifyOtp` 换会话。中间的验证码
+ * 不落在服务层，避免“服务端无状态”被破坏。
+ */
 export interface AuthService {
-  signIn(input: SignInInput): Promise<AuthSession>;
+  requestOtp(input: OtpRequest): Promise<OtpChallengeView>;
+  verifyOtp(input: OtpVerifyInput): Promise<AuthSession>;
+  getSession(): Promise<AuthSession | null>;
   refresh(session: AuthSession): Promise<AuthSession>;
   signOut(session: AuthSession): Promise<void>;
 }
@@ -42,8 +55,16 @@ export function createAuthService(options: AuthServiceOptions): AuthService {
   }
 
   return {
-    async signIn(input: SignInInput): Promise<AuthSession> {
-      return requireAuth().signIn(input);
+    async requestOtp(input: OtpRequest): Promise<OtpChallengeView> {
+      return requireAuth().requestOtp(input);
+    },
+
+    async verifyOtp(input: OtpVerifyInput): Promise<AuthSession> {
+      return requireAuth().verifyOtp(input);
+    },
+
+    async getSession(): Promise<AuthSession | null> {
+      return requireAuth().getSession();
     },
 
     async refresh(session: AuthSession): Promise<AuthSession> {

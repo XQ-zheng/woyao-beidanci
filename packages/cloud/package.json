@@ -1,0 +1,23 @@
+{
+  "name": "@woyao/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "我要背单词的 WorkBuddy Cloud 适配层（认证网关与公共配置）",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "files": ["src"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@tencent-ai/workbuddy-cloud-sdk": "dev",
+    "@woyao/services": "*"
+  }
+}

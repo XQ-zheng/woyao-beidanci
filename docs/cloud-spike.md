@@ -20,42 +20,41 @@
 
 可复现命令：`npm run cloud:check`（需要 `.env.local`，只输出模型数量与回复文本，不输出任何密钥）。
 
-## 3. 与现有服务契约的差异（未实现网关的原因）
+## 3. 认证：已按两段式 OTP 实现
 
-### Auth：单步 `signIn` 与云端两步 OTP 对不上
+登录方式定为：**手机短信验证码（主）+ 邮箱验证码（辅助）**。
 
-`packages/services` 的 `AuthGateway.signIn({ provider, credential })` 假设一次调用就能换回
-`AuthSession`；WorkBuddy Cloud 的邮箱/手机登录是：
+- `AuthGateway` / `AuthService` 已移除单步 `signIn({provider,credential})`，改为
+  `requestOtp({channel,target})` → `verifyOtp({challengeId,isExistingUser,token,...})`。
+- `packages/cloud` 的网关把 SDK 的 `sendOtp` / `verifyOtp` / `getSession` /
+  `refreshSession` / `signOut` 映射为服务层会话；不含 QQ。
+- 桌面端凭据用 Electron `safeStorage`（Windows DPAPI）加密后写
+  `userData/cloud-auth.bin`；没有系统加密时直接不可用，不退回明文。
+- 账号页有手机/邮箱页签、发码倒计时、错误提示与退出登录。
 
-```
-sendOtp / signInWithOtp → 返回 verificationId + isExistingUser
-verifyOtp({ verificationId, token, ... }) → 才建立 session
-```
+平台边界：
 
-把验证码塞进 `credential`、或让服务层保存 `verificationId` 都会破坏“服务层无状态”的约定。
-正确做法是把账号页改成两段式（获取验证码 → 提交验证码），并让 `AuthService` 暴露
-`requestOtp` / `verifyOtp`，这是一次**契约变更**，不能在网关里悄悄糊过去。
+- **QQ 登录不可用**：WorkBuddy Cloud Auth 的 Provider 只有手机/邮箱 OTP、微信与
+  WorkBuddy 账号；没有 QQ，不做假入口。
+- **微信网页登录未接入**：`signInWithOAuth` 的 `redirectTo` 必须是已发布 HTTPS 域名，
+  localhost/桌面 `app://` 不是有效回调域。发布后再加按钮与回调分发。
+- **真实短信/邮件未实测**：没有用真实手机号触发发送；Provider 是否开启、额度是否充足
+  需要在实际登录时验证，失败会如实显示云端错误。
 
-### Sync：云端没有表结构，无法实现 push/pull
+## 4. Sync：云端没有表结构，仍不实现
 
-`SyncGateway` 需要 `entity_changes` 之类的收件表、RLS 与游标函数；当前数据库 0 张表。
-在表结构、冲突策略、匿名合并策略确定前写同步网关，只会得到一套无法验证的假实现。
+`SyncGateway` 需要变更收件表、RLS 与游标函数；当前数据库 0 张表。在表结构、冲突策略、
+匿名合并策略确定前写同步网关，只会得到一套无法验证的假实现。
 
-### LLM：可以直接实现，但暂无 UI 消费方
+## 5. LLM：已验证，适配器暂缓
 
-`LlmPort.translate({ text, target })` 与 SDK 的流式接口能对上（收集 chunk 后返回整段）。
-不过 `OnlineService` 目前只在“在线翻译”路径调用它，而该路径还没有真实词典/在线能力与 UI
-入口；先做适配器会是一段不可达代码。等账号/在线功能接入时再注入。
+`LlmPort.translate({ text, target })` 与 SDK 流式接口能对上；但当前没有在线翻译 UI
+消费方，先写会是不可达代码。等在线功能接入时再注入。
 
-## 4. 结论
+## 6. 结论与下一步
 
-- **LLM 已验证可用**，可在后续实现 `LlmPort` 适配器；本次未写，避免死代码。
-- **Auth 与 Sync 暂不实现**：前者需要修改服务契约与账号 UI，后者需要先设计云端表与 RLS。
+- **Auth（手机/邮箱 OTP）已实现并有单测；未做真实短信验证，微信/QQ 见平台边界。**
+- **Sync 未实现**：需要先在管理面建云表与 RLS。
 - 没有使用 localStorage、假 session 或假同步作为替代。
-
-## 5. 下一步（按顺序）
-
-1. 产品确认登录方式（手机验证码 / 邮箱验证码 / WorkBuddy 账号登录）→ 改账号页为两段式。
-2. 用管理面建 `sync_changes` / `sync_cursors` 等表与 RLS，再实现 `SyncGateway`。
-3. 实现 `LlmPort` 并在在线翻译入口注入。
-4. 发布到 HTTPS 域名后复测浏览器 Origin 与 OAuth 回跳（localhost 不是有效回调域）。
+- 下一步：用管理面建 `sync_changes` / `sync_cursors` 等表 → 实现 `SyncGateway` →
+  接在线翻译 → 发布 HTTPS 后接微信登录并复测 Origin/OAuth。

@@ -256,7 +256,9 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
   };
 
   const auth: Services['auth'] = {
-    signIn: vi.fn(async () => notUsed('auth.signIn')),
+    requestOtp: vi.fn(async () => notUsed('auth.requestOtp')),
+    verifyOtp: vi.fn(async () => notUsed('auth.verifyOtp')),
+    getSession: vi.fn(async () => null),
     refresh: vi.fn(async () => notUsed('auth.refresh')),
     signOut: vi.fn(async () => notUsed('auth.signOut')),
     ...overrides.auth,

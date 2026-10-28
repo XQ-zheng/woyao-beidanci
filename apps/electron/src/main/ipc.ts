@@ -208,13 +208,36 @@ export function createIpcRouter({
       schema: z.object({ wordId: z.string().min(1) }),
       run: async (payload) => services.content.getWordContent(payload as { wordId: string }),
     },
-    'auth.signIn': {
+    'auth.requestOtp': {
       schema: z.object({
-        provider: z.enum(['email', 'phone', 'wechat', 'qq']),
-        credential: z.string().min(1),
+        channel: z.enum(['phone', 'email']),
+        target: z.string().min(1),
       }),
       run: async (payload) =>
-        services.auth.signIn(payload as { provider: 'email' | 'phone' | 'wechat' | 'qq'; credential: string }),
+        services.auth.requestOtp(payload as { channel: 'phone' | 'email'; target: string }),
+    },
+    'auth.verifyOtp': {
+      schema: z.object({
+        channel: z.enum(['phone', 'email']),
+        target: z.string().min(1),
+        challengeId: z.string().min(1),
+        isExistingUser: z.boolean(),
+        token: z.string().min(1),
+      }),
+      run: async (payload) =>
+        services.auth.verifyOtp(
+          payload as {
+            channel: 'phone' | 'email';
+            target: string;
+            challengeId: string;
+            isExistingUser: boolean;
+            token: string;
+          },
+        ),
+    },
+    'auth.getSession': {
+      schema: z.undefined(),
+      run: async () => services.auth.getSession(),
     },
     'sync.synchronize': {
       schema: z.undefined(),

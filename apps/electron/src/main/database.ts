@@ -9,9 +9,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { createDocumentWriter } from '@woyao/exporters';
+import { createDesktopCloud } from './cloud';
 import {
   asyncifyRepositories,
-  createNoopCloud,
   createServiceRuntime,
   type HttpPort,
   type Services,
@@ -147,7 +147,7 @@ export function createDesktopRuntime(options: CreateDesktopRuntimeOptions): Desk
     http: createHttpPort(options.isOnline),
     network: { isOnline: options.isOnline },
     // 云服务在 Task 10 激活；现在注入的是“未配置”，服务层据此如实返回 NOT_CONFIGURED。
-    cloud: createNoopCloud(),
+    cloud: createDesktopCloud(userDataPath),
     writer: createDocumentWriter({ fontPath: findExportFontPath() }),
   };
 

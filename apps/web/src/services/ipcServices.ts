@@ -105,7 +105,9 @@ export function createIpcServices(bridge: WoyaoBridge): Services {
   };
 
   const auth = {
-    signIn: (input: unknown) => call(bridge, 'auth.signIn', input),
+    requestOtp: (input: unknown) => call(bridge, 'auth.requestOtp', input),
+    verifyOtp: (input: unknown) => call(bridge, 'auth.verifyOtp', input),
+    getSession: () => call(bridge, 'auth.getSession'),
     refresh: () => notWired('登录续期'),
     signOut: () => notWired('退出登录'),
   };

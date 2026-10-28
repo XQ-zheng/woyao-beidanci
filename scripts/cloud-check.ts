@@ -56,6 +56,12 @@ const oauthRelayBaseUrl = requireValue(env, 'VITE_WB_CLOUD_OAUTH_RELAY_BASE_URL'
 
 const cloud = createWorkBuddyCloud({ endpoint, publishableKey, oauthRelayBaseUrl });
 
+const sessionResult = await cloud.auth.getSession();
+if (sessionResult.error !== null) {
+  throw new Error(`Auth 数据面不可用：${sessionResult.error.message}`);
+}
+console.log(JSON.stringify({ authReachable: true, signedIn: sessionResult.data !== null }, null, 2));
+
 const models = await cloud.llm.models.list();
 const usable = models.filter((model) => model.enabled !== false && model.disabled !== true);
 console.log(

@@ -29,7 +29,9 @@ export const IPC_CHANNELS = [
   'report.getAssessment',
   'content.getPronunciation',
   'content.getWordContent',
-  'auth.signIn',
+  'auth.requestOtp',
+  'auth.verifyOtp',
+  'auth.getSession',
   'sync.synchronize',
   'sync.resolveConflict',
 ] as const;

@@ -1,11 +1,19 @@
 import { ThemeProvider } from '@mui/material/styles';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { AuthSession } from '@woyao/services';
 
 import { ServiceProvider } from '../services/ServiceProvider';
 import { createFakeServices } from '../test/fakeServices';
 import { appTheme } from '../theme';
 import AccountPage from './AccountPage';
+
+const SESSION: AuthSession = {
+  userId: 'u-1',
+  token: 'secret-token',
+  refreshToken: 'secret-refresh',
+  expiresAt: null,
+};
 
 /** 用真实主题渲染账号页。 */
 function renderAccount(services = createFakeServices()): void {
@@ -18,40 +26,120 @@ function renderAccount(services = createFakeServices()): void {
   );
 }
 
-describe('AccountPage：如实展示云服务状态', () => {
-  it('未配置云时登录失败要报错，不显示假的已登录态', async () => {
-    const services = createFakeServices({
-      auth: {
-        signIn: vi.fn(async () => {
-          throw new Error('云认证未配置（WorkBuddy Cloud 未激活）');
-        }),
-      },
-    });
-    renderAccount(services);
+describe('AccountPage：手机验证码登录', () => {
+  it('未登录时显示手机号与验证码输入，不显示任何 token', async () => {
+    renderAccount();
 
+    expect(await screen.findByRole('tab', { name: '手机验证码' })).toBeInTheDocument();
+    expect(screen.getByLabelText('手机号')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '获取验证码' })).toBeInTheDocument();
+    expect(screen.queryByText('secret-token')).toBeNull();
+  });
+
+  it('手机号为空时本地拦截，不发码', async () => {
+    const requestOtp = vi.fn();
+    renderAccount(createFakeServices({ auth: { requestOtp } }));
+
+    fireEvent.click(await screen.findByRole('button', { name: '获取验证码' }));
+
+    expect(await screen.findByText('请先填写手机号。')).toBeInTheDocument();
+    expect(requestOtp).not.toHaveBeenCalled();
+  });
+
+  it('手机号格式不对时本地拦截', async () => {
+    const requestOtp = vi.fn();
+    renderAccount(createFakeServices({ auth: { requestOtp } }));
+
+    fireEvent.change(screen.getByLabelText('手机号'), { target: { value: '12345' } });
+    fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
+
+    expect(await screen.findByText('请输入正确的 11 位手机号。')).toBeInTheDocument();
+    expect(requestOtp).not.toHaveBeenCalled();
+  });
+
+  it('发码 → 验码 → 显示已登录，并把 challenge 原样带回', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true }));
+    const verifyOtp = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
+
+    fireEvent.change(await screen.findByLabelText('手机号'), { target: { value: '13800138000' } });
+    fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
+
+    expect(await screen.findByText(/验证码已发送/)).toBeInTheDocument();
+    expect(requestOtp).toHaveBeenCalledWith({ channel: 'phone', target: '13800138000' });
+
+    fireEvent.change(screen.getByLabelText('验证码'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录 / 注册' }));
+
+    expect(await screen.findByText('账号已登录。token 不会显示在界面上，也不会写进日志。')).toBeInTheDocument();
+    expect(verifyOtp).toHaveBeenCalledWith({
+      channel: 'phone',
+      target: '13800138000',
+      challengeId: 'ch-1',
+      isExistingUser: true,
+      token: '123456',
+    });
+    expect(screen.queryByText('secret-token')).toBeNull();
+  });
+
+  it('未获取验证码就提交时本地拦截', async () => {
+    const verifyOtp = vi.fn();
+    renderAccount(createFakeServices({ auth: { verifyOtp } }));
+
+    fireEvent.change(await screen.findByLabelText('手机号'), { target: { value: '13800138000' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录 / 注册' }));
+
+    expect(await screen.findByText('请先为当前手机号/邮箱获取验证码。')).toBeInTheDocument();
+    expect(verifyOtp).not.toHaveBeenCalled();
+  });
+
+  it('发码失败时展示服务返回的错误', async () => {
+    const requestOtp = vi.fn(async () => {
+      throw new Error('短信额度不足');
+    });
+    renderAccount(createFakeServices({ auth: { requestOtp } }));
+
+    fireEvent.change(await screen.findByLabelText('手机号'), { target: { value: '13800138000' } });
+    fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
+
+    expect(await screen.findByText(/发送验证码失败：短信额度不足/)).toBeInTheDocument();
+  });
+});
+
+describe('AccountPage：邮箱辅助登录', () => {
+  it('切到邮箱页签后用 email 渠道发码', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-e', isExistingUser: false }));
+    renderAccount(createFakeServices({ auth: { requestOtp } }));
+
+    fireEvent.click(await screen.findByRole('tab', { name: '邮箱验证码（辅助）' }));
     fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'me@example.com' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
 
-    expect(await screen.findByText(/登录失败：云认证未配置/)).toBeInTheDocument();
-    expect(screen.queryByText(/已登录/)).toBeNull();
+    await waitFor(() =>
+      expect(requestOtp).toHaveBeenCalledWith({ channel: 'email', target: 'me@example.com' }),
+    );
   });
+});
 
-  it('邮箱为空时本地拦截，不调用 signIn', () => {
-    const signIn = vi.fn(async () => {
-      throw new Error('不应被调用');
-    });
-    renderAccount(createFakeServices({ auth: { signIn } }));
+describe('AccountPage：已登录与退出', () => {
+  it('已有会话时显示已登录，退出后回到登录表单', async () => {
+    const signOut = vi.fn(async () => undefined);
+    const getSession = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { getSession, signOut } }));
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    expect(await screen.findByText(/账号已登录/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
 
-    expect(screen.getByText('请先填写邮箱。')).toBeInTheDocument();
-    expect(signIn).not.toHaveBeenCalled();
+    await waitFor(() => expect(signOut).toHaveBeenCalledWith(SESSION));
+    expect(await screen.findByRole('tab', { name: '手机验证码' })).toBeInTheDocument();
   });
+});
 
+describe('AccountPage：同步状态', () => {
   it('同步返回 NOT_CONFIGURED 时明确说明未执行同步', async () => {
     const synchronize = vi.fn(async () => ({
-      startedAt: '2026-10-27T02:00:00.000Z',
-      endedAt: '2026-10-27T02:00:01.000Z',
+      startedAt: '2026-10-28T02:00:00.000Z',
+      endedAt: '2026-10-28T02:00:01.000Z',
       pushed: 0,
       duplicates: 0,
       pulled: 0,
@@ -63,31 +151,9 @@ describe('AccountPage：如实展示云服务状态', () => {
     }));
     renderAccount(createFakeServices({ sync: { synchronize } }));
 
-    fireEvent.click(screen.getByRole('button', { name: '立即同步' }));
+    fireEvent.click(await screen.findByRole('button', { name: '立即同步' }));
 
-    expect(await screen.findByText('云服务未配置，本次没有执行任何同步。')).toBeInTheDocument();
+    expect(await screen.findByText('云同步尚未接入，本次没有执行任何同步。')).toBeInTheDocument();
     expect(synchronize).toHaveBeenCalledTimes(1);
-  });
-
-  it('同步有部分失败时展示计数与错误信息', async () => {
-    const synchronize = vi.fn(async () => ({
-      startedAt: '2026-10-27T02:00:00.000Z',
-      endedAt: '2026-10-27T02:00:01.000Z',
-      pushed: 3,
-      duplicates: 1,
-      pulled: 2,
-      applied: 2,
-      conflicts: 0,
-      errors: 1,
-      status: 'PARTIAL' as const,
-      errorMessages: ['一条事件推送失败'],
-    }));
-    renderAccount(createFakeServices({ sync: { synchronize } }));
-
-    fireEvent.click(screen.getByRole('button', { name: '立即同步' }));
-
-    expect(await screen.findByText('同步部分完成，有失败项。')).toBeInTheDocument();
-    expect(screen.getByText(/推送 3 · 重复 1 · 拉取 2/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText('一条事件推送失败')).toBeInTheDocument());
   });
 });

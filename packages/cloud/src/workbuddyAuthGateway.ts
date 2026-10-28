@@ -31,6 +31,13 @@ export interface WorkBuddyAuthGatewayOptions {
   readonly storage?: CloudAuthStorage;
   /** 测试注入；缺省用真实 SDK。 */
   readonly auth?: WorkBuddyAuthLike;
+  /**
+   * 自定义 fetch（追踪/测试注入）。缺省用全局 `fetch`。
+   *
+   * 桌面端靠它把认证 HTTP 往返写进脱敏日志——打包版没有终端，
+   * 「云端拒绝建立会话」这类故障只能从服务端原始报文定位。
+   */
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 /** 云端认证失败（保留 SDK 的错误码，UI 可据此提示）。 */
@@ -92,6 +99,7 @@ export function createWorkBuddyAuthGateway(options: WorkBuddyAuthGatewayOptions)
       oauthRelayBaseUrl: config.oauthRelayBaseUrl,
       publishableKey: config.publishableKey,
       ...(options.storage === undefined ? {} : { storage: options.storage }),
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     }).auth;
 
   return {

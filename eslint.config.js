@@ -40,11 +40,13 @@ const toolingConfigFiles = [
   // 真实浏览器布局测量脚本：Node 侧跑 Playwright，回调体在页面里执行，
   // 所以这个文件同时需要 Node 与浏览器全局。
   'dev/*.mjs',
+  // 打包/图标生成脚本：纯 Node 侧工具，需要 process / console / __dirname 等全局。
+  'scripts/**/*.mjs',
 ];
 
 export default tseslint.config(
   {
-    ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**'],
+    ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**', 'build/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

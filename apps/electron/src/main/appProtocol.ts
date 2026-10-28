@@ -6,7 +6,8 @@
  * 协议上，既保住 `webSecurity: true`，又不用为加载本地页面关掉同源策略。
  */
 import { protocol } from 'electron';
-import { readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /** 协议名与主机名。 */
@@ -41,14 +42,60 @@ export function serveAppProtocol(webRoot: string): void {
     if (!requested.startsWith(root + path.sep) && requested !== path.join(root, 'index.html')) {
       return new Response('Forbidden', { status: 403 });
     }
+    const file = await resolveSpaFile(root, requested);
+    if (file === null) {
+      return new Response('Not Found', { status: 404 });
+    }
     try {
-      const body = await readFile(requested);
-      return new Response(body, { headers: { 'content-type': contentTypeOf(requested) } });
+      const body = await readFile(file);
+      return new Response(body, { headers: { 'content-type': contentTypeOf(file) } });
     } catch (error: unknown) {
-      console.error('[woyao] app:// 读取失败', requested, error);
+      console.error('[woyao] app:// 读取失败', file, error);
       return new Response('Not Found', { status: 404 });
     }
   });
+}
+
+/**
+ * 把请求路径解析成真实文件；找不到且看起来是路由（无扩展名）时回退到 `index.html`。
+ *
+ * 为什么需要回退：界面用 `BrowserRouter`，打包后地址是 `app://bundle/settings`。
+ * 用户在窗口里刷新（或者未来做深链接）时，协议层收到的是没有扩展名的路径，
+ * 直接 404 会让整个窗口变成 Chromium 的错误页——看起来就像“软件坏了”。
+ *
+ * @param root web 产物根目录。
+ * @param requested 已解析且通过穿越检查的目标路径。
+ * @returns 可以读取的文件路径；确实不存在时返回 null。
+ */
+async function resolveSpaFile(root: string, requested: string): Promise<string | null> {
+  if (await isReadableFile(requested)) {
+    return requested;
+  }
+  if (path.extname(requested) !== '') {
+    console.error('[woyao] app:// 资源不存在', requested);
+    return null;
+  }
+  const entry = path.join(root, 'index.html');
+  if (await isReadableFile(entry)) {
+    return entry;
+  }
+  console.error('[woyao] app:// 回退 index.html 失败，产物目录可能不完整', entry);
+  return null;
+}
+
+/**
+ * 判断路径是否是可读文件。
+ *
+ * @param target 绝对路径。
+ * @returns 是否可读。
+ */
+async function isReadableFile(target: string): Promise<boolean> {
+  try {
+    await access(target, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

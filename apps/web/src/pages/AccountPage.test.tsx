@@ -77,14 +77,14 @@ describe('AccountPage：手机验证码登录', () => {
     renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
 
     await requestCodeAndFill('123456');
-    expect(requestOtp).toHaveBeenCalledWith({ channel: 'phone', target: '13800138000' });
+    expect(requestOtp).toHaveBeenCalledWith({ channel: 'phone', target: '+86 13800138000' });
 
     fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     expect(await screen.findByText('登录成功。')).toBeInTheDocument();
     expect(verifyOtp).toHaveBeenCalledWith({
       channel: 'phone',
-      target: '13800138000',
+      target: '+86 13800138000',
       challengeId: 'ch-1',
       isExistingUser: true,
       token: '123456',

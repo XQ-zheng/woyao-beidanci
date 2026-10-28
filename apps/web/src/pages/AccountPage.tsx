@@ -4,6 +4,9 @@ import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import Divider from '@mui/material/Divider';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import InputAdornment from '@mui/material/InputAdornment';
+import MenuItem from '@mui/material/MenuItem';
+import Select from '@mui/material/Select';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
@@ -25,6 +28,27 @@ const RESEND_SECONDS = 60;
 const AUTO_LOGIN_STORAGE_KEY = 'woyao.autoLogin';
 /** 点击按钮表达的用户意图：登录已有账号，还是注册新账号。 */
 type AuthIntent = 'signIn' | 'signUp';
+
+/** 手机国际区号选项（常见国家/地区；默认中国大陆 +86）。 */
+const DIALING_CODES: ReadonlyArray<{ readonly code: string; readonly label: string }> = [
+  { code: '+86', label: '中国大陆' },
+  { code: '+852', label: '中国香港' },
+  { code: '+853', label: '中国澳门' },
+  { code: '+886', label: '中国台湾' },
+  { code: '+1', label: '美国 / 加拿大' },
+  { code: '+44', label: '英国' },
+  { code: '+61', label: '澳大利亚' },
+  { code: '+65', label: '新加坡' },
+  { code: '+81', label: '日本' },
+  { code: '+82', label: '韩国' },
+  { code: '+60', label: '马来西亚' },
+  { code: '+66', label: '泰国' },
+  { code: '+33', label: '法国' },
+  { code: '+49', label: '德国' },
+];
+
+/** 区号默认值（中国大陆）。 */
+const DEFAULT_DIALING_CODE = '+86';
 
 /** 把异常压成可展示的一句话。 */
 function describeError(error: unknown): string {
@@ -68,8 +92,14 @@ function normalizeCode(value: string, channel: 'phone' | 'email'): string {
  * @returns 脱敏后的文本。
  */
 function maskTarget(target: string, channel: 'phone' | 'email'): string {
-  if (channel === 'phone' && target.length === 11) {
-    return `${target.slice(0, 3)}****${target.slice(-4)}`;
+  if (channel === 'phone') {
+    // 手机号带区号（如 `+86 13790758356`），只对末尾号码脱敏，保留区号前缀。
+    const digits = target.replace(/\D+/gu, '');
+    if (digits.length >= 11) {
+      const local = digits.slice(-11);
+      return `${target.slice(0, target.length - local.length)}${local.slice(0, 3)}****${local.slice(-4)}`;
+    }
+    return target;
   }
   const at = target.indexOf('@');
   if (channel === 'email' && at > 1) {
@@ -128,6 +158,7 @@ export default function AccountPage(): ReactElement {
   const services = useServices();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [channel, setChannel] = useState<'phone' | 'email'>('phone');
+  const [dialingCode, setDialingCode] = useState<string>(DEFAULT_DIALING_CODE);
   const [target, setTarget] = useState('');
   const [token, setToken] = useState('');
   const [challenge, setChallenge] = useState<OtpChallengeView | null>(null);
@@ -215,16 +246,18 @@ export default function AccountPage(): ReactElement {
       return;
     }
     const value = normalizeInput(target);
+    // 手机号拼上区号（服务端要求 E.164 国际格式：`+86 13790758356`）。
+    const fullTarget = channel === 'phone' ? `${dialingCode} ${value}` : value;
     setSending(true);
     setAuthError(null);
     setAuthHint(null);
     setNotice(null);
     try {
-      const result = await activeServices.auth.requestOtp({ channel, target: value });
+      const result = await activeServices.auth.requestOtp({ channel, target: fullTarget });
       setChallenge(result);
-      setSentTo(value);
+      setSentTo(fullTarget);
       setCountdown(RESEND_SECONDS);
-      setNotice(`验证码已发送至 ${maskTarget(value, channel)}，只有最新一条有效。`);
+      setNotice(`验证码已发送至 ${maskTarget(fullTarget, channel)}，只有最新一条有效。`);
     } catch (cause: unknown) {
       setChallenge(null);
       setAuthError(`发送验证码失败：${describeError(cause)}`);
@@ -240,7 +273,8 @@ export default function AccountPage(): ReactElement {
    */
   async function verifyCode(intent: AuthIntent): Promise<void> {
     const value = normalizeInput(target);
-    if (challenge === null || sentTo !== value) {
+    const fullTarget = channel === 'phone' ? `${dialingCode} ${value}` : value;
+    if (challenge === null || sentTo !== fullTarget) {
       setAuthError('请先为当前手机号/邮箱获取验证码。');
       return;
     }
@@ -367,22 +401,76 @@ export default function AccountPage(): ReactElement {
               <Tab value="email" label="邮箱验证码（辅助）" />
             </Tabs>
 
-            <TextField
-              size="small"
-              label={channel === 'phone' ? '手机号' : '邮箱'}
-              type={channel === 'phone' ? 'tel' : 'email'}
-              value={target}
-              onChange={(event) => {
-                setTarget(event.target.value);
-                setChallenge(null);
-                setSentTo('');
-                setAuthError(null);
-                setAuthHint(null);
-              }}
-              autoComplete={channel === 'phone' ? 'tel' : 'email'}
-              helperText={channel === 'phone' ? '大陆 11 位手机号' : '用于辅助登录，可选'}
-              sx={{ maxWidth: 360 }}
-            />
+            {channel === 'phone' ? (
+              <TextField
+                size="small"
+                label="手机号"
+                type="tel"
+                value={target}
+                onChange={(event) => {
+                  setTarget(event.target.value);
+                  setChallenge(null);
+                  setSentTo('');
+                  setAuthError(null);
+                  setAuthHint(null);
+                }}
+                autoComplete="tel"
+                helperText="大陆 11 位手机号"
+                sx={{ maxWidth: 360 }}
+                slotProps={{
+                  input: {
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Select
+                          value={dialingCode}
+                          onChange={(event) => {
+                            setDialingCode(event.target.value);
+                            setChallenge(null);
+                            setSentTo('');
+                            setAuthError(null);
+                            setAuthHint(null);
+                          }}
+                          variant="standard"
+                          disableUnderline
+                          aria-label="国际区号"
+                          sx={{
+                            minWidth: 88,
+                            '& .MuiSelect-select': { py: 0.5, pr: 2 },
+                          }}
+                          MenuProps={{
+                            anchorOrigin: { vertical: 'bottom', horizontal: 'left' },
+                            transformOrigin: { vertical: 'top', horizontal: 'left' },
+                          }}
+                        >
+                          {DIALING_CODES.map((option) => (
+                            <MenuItem key={option.code} value={option.code}>
+                              {option.code} {option.label}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+              />
+            ) : (
+              <TextField
+                size="small"
+                label="邮箱"
+                type="email"
+                value={target}
+                onChange={(event) => {
+                  setTarget(event.target.value);
+                  setChallenge(null);
+                  setSentTo('');
+                  setAuthError(null);
+                  setAuthHint(null);
+                }}
+                autoComplete="email"
+                helperText="用于辅助登录，可选"
+                sx={{ maxWidth: 360 }}
+              />
+            )}
 
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
               <Button

@@ -180,7 +180,10 @@ describe('onlineService：translate', () => {
 
   it('已配 llm 正常返回；llm 抛错 → ProviderError', async () => {
     const ok = makeOnline({
-      llm: { translate: async () => '放弃' },
+      llm: {
+        translate: async () => '放弃',
+        defineWord: async () => [],
+      },
     });
     await expect(ok.service.translate({ text: 'abandon', target: 'zh' })).resolves.toBe('放弃');
 
@@ -189,6 +192,7 @@ describe('onlineService：translate', () => {
         translate: async () => {
           throw new Error('upstream down');
         },
+        defineWord: async () => [],
       },
     });
     await expect(failing.service.translate({ text: 'abandon', target: 'zh' })).rejects.toBeInstanceOf(

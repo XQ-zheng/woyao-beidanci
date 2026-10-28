@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { createDocumentWriter } from '@woyao/exporters';
-import { createDesktopCloud } from './cloud';
+import { createDesktopCloud, createDesktopLlm } from './cloud';
 import {
   asyncifyRepositories,
   createServiceRuntime,
@@ -148,6 +148,8 @@ export function createDesktopRuntime(options: CreateDesktopRuntimeOptions): Desk
     network: { isOnline: options.isOnline },
     // 云服务在 Task 10 激活；现在注入的是“未配置”，服务层据此如实返回 NOT_CONFIGURED。
     cloud: createDesktopCloud(userDataPath),
+    // 云端 LLM（翻译 + 导入释义生成）；云未激活时为 undefined，服务层走降级。
+    llm: createDesktopLlm(userDataPath),
     writer: createDocumentWriter({ fontPath: findExportFontPath() }),
   };
 

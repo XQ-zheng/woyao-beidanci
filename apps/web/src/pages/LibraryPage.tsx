@@ -218,11 +218,15 @@ export default function LibraryPage(): ReactElement {
                     {(words.data ?? []).map((word) => {
                       const importance = frequencyLabel(word.frequency.importance);
                       const expanded = expandedWordId === word.wordId;
+                      const noDefinition =
+                        word.senses.length === 0 ||
+                        word.senses.every((sense) => sense.simpleZh === '（暂无释义）');
                       return (
                         <Box key={word.wordId} component="li" sx={{ listStyle: 'none' }}>
                           <ListItemButton
                             onClick={() => setExpandedWordId(expanded ? null : word.wordId)}
                             aria-expanded={expanded}
+                            title="单击展开或收起释义"
                           >
                             <ListItemText
                               primary={
@@ -238,9 +242,21 @@ export default function LibraryPage(): ReactElement {
                                   {importance !== null ? (
                                     <Chip size="small" variant="outlined" label={importance} />
                                   ) : null}
+                                  {noDefinition ? (
+                                    <Chip
+                                      size="small"
+                                      color="warning"
+                                      variant="outlined"
+                                      label="暂无释义"
+                                    />
+                                  ) : null}
                                 </Box>
                               }
-                              secondary={word.senses.map((sense) => sense.simpleZh).join('；')}
+                              secondary={
+                                noDefinition
+                                  ? '（暂无释义）— 重新导入该词，AI 会自动补全释义'
+                                  : word.senses.map((sense) => sense.simpleZh).join('；')
+                              }
                             />
                           </ListItemButton>
                           {expanded ? (
@@ -258,6 +274,11 @@ export default function LibraryPage(): ReactElement {
                                   ) : null}
                                 </Box>
                               ))}
+                              {noDefinition ? (
+                                <Typography variant="body2" color="warning.main">
+                                  这个词条还没有释义。点「导入单词」重新导入同一个词，AI 会自动补全。
+                                </Typography>
+                              ) : null}
                             </Box>
                           ) : null}
                         </Box>

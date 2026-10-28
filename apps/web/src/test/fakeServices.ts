@@ -287,8 +287,8 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
     importWords: vi.fn(async () => ({
       imported: 0,
       duplicates: 0,
-      withDefinition: 0,
-      withoutDefinition: 0,
+      backfilled: 0,
+      skipped: [],
       rows: [],
     })),
     ...overrides.import,

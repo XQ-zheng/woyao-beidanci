@@ -251,9 +251,17 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
         ) : null}
 
         {result !== null ? (
-          <Alert severity="success">
-            导入完成：新增 {result.imported} 个，重复 {result.duplicates} 个，已补释义 {result.withDefinition} 个，
-            暂无释义 {result.withoutDefinition} 个。
+          <Alert severity={result.skipped.length > 0 ? 'warning' : 'success'}>
+            <Typography variant="body2">
+              {`导入完成：新增 ${result.imported} 个，已存在 ${result.duplicates} 个，补全释义 ${result.backfilled} 个。`}
+            </Typography>
+            {result.skipped.length > 0 ? (
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                {`有 ${result.skipped.length} 个词条因 AI 释义生成失败被跳过（联网后重新导入即可）：${result.skipped
+                  .map((item) => item.lemma)
+                  .join('、')}`}
+              </Typography>
+            ) : null}
           </Alert>
         ) : null}
       </DialogContent>

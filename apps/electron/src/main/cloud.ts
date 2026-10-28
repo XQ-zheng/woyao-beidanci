@@ -9,8 +9,8 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
-import { createWorkBuddyAuthGateway, readCloudPublicConfig, type CloudPublicConfig } from '@woyao/cloud';
-import { createNoopCloud, type CloudPort } from '@woyao/services';
+import { createCloudLlm, createWorkBuddyAuthGateway, readCloudPublicConfig, type CloudPublicConfig } from '@woyao/cloud';
+import { createNoopCloud, type CloudPort, type LlmPort } from '@woyao/services';
 
 import { EncryptedAuthStorage } from './secureStore';
 
@@ -101,6 +101,28 @@ export function createDesktopCloud(userDataPath: string): CloudPort {
   } catch (error) {
     console.warn('[woyao] 云认证初始化失败：', error instanceof Error ? error.message : error);
     return createNoopCloud();
+  }
+}
+
+/**
+ * 创建云端 LLM 端口（翻译 + 导入释义生成）。
+ *
+ * 云未激活时返回 undefined：服务层据此如实走降级（导入时跳过 AI 补释义），
+ * 而不是注入一个假装能用的实现。
+ *
+ * @param userDataPath 应用数据目录（读云公共配置用）。
+ * @returns LLM 端口；云未配置时 undefined。
+ */
+export function createDesktopLlm(userDataPath: string): LlmPort | undefined {
+  const config = loadCloudConfig(userDataPath);
+  if (config === null) {
+    return undefined;
+  }
+  try {
+    return createCloudLlm({ config });
+  } catch (error) {
+    console.warn('[woyao] 云 LLM 初始化失败：', error instanceof Error ? error.message : error);
+    return undefined;
   }
 }
 

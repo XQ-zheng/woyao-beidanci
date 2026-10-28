@@ -160,13 +160,32 @@ export interface HttpPort {
 }
 
 /**
+ * LLM 生成的词典义项（导入补释义用）。
+ */
+export interface LlmWordSense {
+  /** 词性缩写，如 `n.` / `v.` / `adj.`。 */
+  readonly pos: string;
+  /** 简明中文释义。 */
+  readonly simpleZh: string;
+  /** 详细解释（可空）。 */
+  readonly detailedZh: string | null;
+}
+
+/**
  * LLM 端口（外壳注入）。
  *
- * 只用于“翻译”这一类**明确标 AI 生成**的能力；结果不写进词典义项。
- * 未配置（`null`/未提供实现）时，服务层抛 `NotConfiguredError('llm')`。
+ * 用于「明确标 AI 生成」的能力：翻译、导入单词时的词典义项生成。
+ * 未配置（未提供实现）时，服务层抛 `NotConfiguredError('llm')` 而不是静默降级。
  */
 export interface LlmPort {
   translate(input: { text: string; target: 'zh' | 'en' }): Promise<string>;
+  /**
+   * 为英文单词或短语生成词典义项（最多 3 条）。
+   *
+   * @param input 词形与是否短语。
+   * @returns 义项列表；模型无法给出时抛错，由调用方决定跳过或重试。
+   */
+  defineWord(input: { lemma: string; phrase: boolean }): Promise<readonly LlmWordSense[]>;
 }
 
 /** 网络可达性端口（外壳注入，决定降级路径是否走在线）。 */

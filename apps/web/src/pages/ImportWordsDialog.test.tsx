@@ -54,8 +54,8 @@ describe('ImportWordsDialog：手动输入导入', () => {
     const importWords = vi.fn(async () => ({
       imported: 2,
       duplicates: 0,
-      withDefinition: 1,
-      withoutDefinition: 1,
+      backfilled: 0,
+      skipped: [],
       rows: [],
     }));
     renderDialog({ import: { importWords } });
@@ -77,7 +77,28 @@ describe('ImportWordsDialog：手动输入导入', () => {
         ],
       }),
     );
-    expect(await screen.findByText(/新增 2 个，重复 0 个，已补释义 1 个/)).toBeInTheDocument();
+    expect(await screen.findByText(/新增 2 个，已存在 0 个，补全释义 0 个/)).toBeInTheDocument();
+  });
+
+  it('AI 释义失败的词条在报告里列出跳过原因', async () => {
+    const importWords = vi.fn(async () => ({
+      imported: 1,
+      duplicates: 0,
+      backfilled: 0,
+      skipped: [{ lemma: 'mystery', reason: '额度用尽' }],
+      rows: [],
+    }));
+    renderDialog({ import: { importWords } });
+
+    fireEvent.change(screen.getByLabelText('每行一个单词或短语'), {
+      target: { value: 'apple\nmystery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '解析并预览' }));
+    await screen.findByText('待导入（2 条）');
+    fireEvent.click(screen.getByRole('button', { name: /导入 2 个词/ }));
+
+    expect(await screen.findByText(/1 个词条因 AI 释义生成失败被跳过/)).toBeInTheDocument();
+    expect(screen.getByText(/mystery/)).toBeInTheDocument();
   });
 });
 

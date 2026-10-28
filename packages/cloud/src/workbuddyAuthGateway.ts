@@ -17,6 +17,7 @@ import type {
 import type { AuthGateway, AuthSession, OtpChallengeView } from '@woyao/services';
 
 import { CloudConfigError, type CloudPublicConfig } from './config';
+import { persistPhoneSession, signInWithPhoneOtp } from './phoneOtpSignIn';
 
 /** 只依赖实际用到的 Auth 方法，便于单测注入假实现。 */
 export type WorkBuddyAuthLike = Pick<
@@ -114,6 +115,22 @@ export function createWorkBuddyAuthGateway(options: WorkBuddyAuthGatewayOptions)
     },
 
     async verifyOtp(input): Promise<AuthSession> {
+      // 已注册的手机号走兜底通道：SDK 的 /v1/signin 用 `username` 找用户，
+      // 而手机号注册的账号没有 username，实测必被 401 invalid_grant 拒掉
+      // （详见 phoneOtpSignIn.ts 的事故说明）。新注册仍走 SDK 原路径。
+      // 注入假 auth 时不走兜底：那种场景测的是本层映射，不该打真实网络。
+      if (input.channel === 'phone' && input.isExistingUser && options.auth === undefined) {
+        const { session } = await signInWithPhoneOtp(
+          {
+            endpoint: config.endpoint,
+            publishableKey: config.publishableKey,
+            ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+          },
+          { phone: input.target, verificationId: input.challengeId, code: input.token },
+        );
+        persistPhoneSession(options.storage, config.publishableKey, session);
+        return toAuthSession(session);
+      }
       const params: VerifyOtpParams & { isExistingUser: boolean } =
         input.channel === 'phone'
           ? {

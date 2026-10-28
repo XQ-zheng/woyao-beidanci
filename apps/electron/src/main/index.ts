@@ -7,7 +7,7 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { app, BrowserWindow, ipcMain, net } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, net } from 'electron';
 
 import type { SettingsSnapshot } from '@woyao/services';
 
@@ -69,6 +69,8 @@ function resolveIconPath(): string {
 }
 /** 主窗口。 */
 let mainWindow: BrowserWindow | null = null;
+/** 冒烟诊断收集器（仅 `WOYAO_SMOKE_OUT` 存在时非 null；正常路径的报告也要读它）。 */
+let smokeDiagnostics: SmokeDiagnostics | null = null;
 /** 是否正在退出（用于区分“关窗口”和“退应用”）。 */
 let quitting = false;
 /** 当前是否“关闭窗口时最小化到托盘”（来自设置，默认 false）。 */
@@ -78,6 +80,10 @@ let minimizeToTray = false;
 app.setName('woyao-beidanci');
 // 任务栏分组/固定到任务栏后的图标归属：不设的话 Windows 会把窗口当成 electron.exe 的。
 app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+// 清掉 Electron 自带的英文默认菜单（File/Edit/View/Window）：消费级应用窗口只应有内容，
+// 复制/粘贴等编辑快捷键由 Chromium 内建支持，不依赖菜单栏。留着它只会让白屏故障
+// 看起来像「一个叫 woyao-beidanci 的英文软件」。
+Menu.setApplicationMenu(null);
 registerAppScheme();
 // 纯 2D 界面（MUI/CSS）用不到 GPU；关掉硬件加速可避开虚拟机/远程桌面上
 // "GPU process isn't usable" 直接退出，也省显存。
@@ -143,7 +149,7 @@ if (!hasLock) {
       // 冒烟模式：把加载失败/崩溃/控制台错误也落盘，打包版白屏时才有线索。
       const smokeOut = process.env.WOYAO_SMOKE_OUT;
       if (smokeOut !== undefined) {
-        installSmokeDiagnostics(window, smokeOut);
+        smokeDiagnostics = installSmokeDiagnostics(window, smokeOut);
       }
 
       // 只有用户显式打开“最小化到托盘”才拦截关闭；默认关闭时点 × 就是退出。
@@ -190,6 +196,7 @@ const SMOKE_SCRIPT = `(async () => {
     title: document.title,
     url: location.href,
     text: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 300),
+    rootChildren: document.getElementById('root') === null ? -1 : document.getElementById('root').children.length,
     hasBridge: Boolean(bridge),
     settingsOk: settings && settings.ok === true,
     settings: settings && settings.ok ? settings.data : null,
@@ -219,8 +226,18 @@ function createSmokeReporter(): (() => void) | undefined {
     finishSmoke(smokeOut, () =>
       target.webContents
         .executeJavaScript(SMOKE_SCRIPT)
-        .then((info: unknown) => ({ ok: true, info }))
-        .catch((error: unknown) => ({ ok: false, error: String(error) })),
+        // 事件流（含渲染进程 console 错误 / did-fail-load / render-process-gone）
+        // 必须随正常路径一起落盘：只看 innerText 会漏掉「壳渲染成功、路由模块崩溃」这类故障。
+        .then((info: unknown) => ({
+          ok: true,
+          info,
+          events: [...(smokeDiagnostics?.events ?? [])],
+        }))
+        .catch((error: unknown) => ({
+          ok: false,
+          error: String(error),
+          events: [...(smokeDiagnostics?.events ?? [])],
+        })),
     );
   };
 }

@@ -234,6 +234,51 @@ function assertBuildOutputs() {
   if (missing.length > 0) {
     throw new Error(`构建产物缺失：\n  ${missing.join('\n  ')}`);
   }
+  assertWebBundleIsBrowserOnly();
+}
+
+/**
+ * 断言 web 产物没有把 Node 专属模块打包进浏览器 chunk。
+ *
+ * 事故复盘（2026-10-28）：`@woyao/services` 桶导出把 `@woyao/data/connection`
+ * 拖进渲染进程，其顶层的 `import Database from 'better-sqlite3'` 让打包器把
+ * 驱动的 CommonJS 壳塞进了 web chunk；该壳在模块求值期就解构
+ * `require('node:util')`（浏览器里是空对象），抛 `TypeError: i is not a
+ * function`，React 挂载失败 → 用户看到只剩菜单栏的空白窗口。
+ *
+ * 防线有三层：web 构建的 better-sqlite3 桩（apps/web/vite.config.ts）、
+ * 本函数的产物扫描、冒烟报告的渲染进程 console 错误。这里用驱动内部
+ * 稳定的特征串（`cppdb`、`prepare(\`EXPLAIN`）做识别，避免依赖路径名。
+ */
+function assertWebBundleIsBrowserOnly() {
+  /** better-sqlite3 打进浏览器产物时的稳定特征串。 */
+  const markers = [/cppdb/u, /EXPLAIN \$\{/u];
+  const assetsDir = path.join(webDistDir, 'assets');
+  if (!existsSync(assetsDir)) {
+    throw new Error(`web 产物缺少 assets 目录：${assetsDir}`);
+  }
+  const offenders = [];
+  for (const file of readdirSync(assetsDir)) {
+    if (!file.endsWith('.js')) {
+      continue;
+    }
+    const source = readFileSync(path.join(assetsDir, file), 'utf8');
+    if (markers.some((marker) => marker.test(source))) {
+      offenders.push(file);
+    }
+  }
+  if (offenders.length > 0) {
+    throw new Error(
+      [
+        'web 产物里混入了 Node 专属模块（better-sqlite3）的特征代码：',
+        `  ${offenders.join(', ')}`,
+        '  后果：渲染进程模块求值即崩溃，窗口只剩菜单栏。',
+        '  修复：检查 apps/web/vite.config.ts 的 better-sqlite3 桩 alias 是否被移除，',
+        '  或渲染代码是否新增了直接引用 @woyao/data/@woyao/exporters 运行时值的导入。',
+      ].join('\n'),
+    );
+  }
+  console.log('  web 产物未检出 Node 专属模块特征（cppdb/EXPLAIN）');
 }
 
 /**

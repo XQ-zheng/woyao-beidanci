@@ -27,11 +27,14 @@ import {
   listDeckWordsInputSchema,
   parseOrThrow,
   renameDeckInputSchema,
+  updateWordSenseInputSchema,
   type CreateWordInput,
   type CreatedWordView,
   type DeckSummary,
   type DeckWordView,
   type FrequencyView,
+  type SenseView,
+  type UpdateWordSenseInput,
 } from './dto';
 import { ServiceConflictError, ServiceNotFoundError, ServiceValidationError } from './errors';
 import { loadFrequencyLookup, toFrequencyView, type FrequencyLookup } from './frequencyView';
@@ -62,6 +65,13 @@ export interface LibraryService {
   isInNotebook(wordId: string): Promise<boolean>;
   /** 自建词（含多义项）；重复词返回既有记录并标记 `created: false`。 */
   createWord(input: CreateWordInput): Promise<CreatedWordView>;
+  /**
+   * 编辑词条的一个义项（词库页「编辑释义」）。
+   *
+   * 词条不存在抛 `ServiceNotFoundError`；义项不存在同样抛 `ServiceNotFoundError`。
+   * 更新会推进义项 revision（同步侧按行合并）。
+   */
+  updateWordSense(input: UpdateWordSenseInput): Promise<SenseView>;
   /** 读一个词在指定语料里的重要性。 */
   getFrequency(input: { wordId: string; exam: string; corpusVersion: string }): Promise<FrequencyView>;
 }
@@ -395,6 +405,34 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
           : null;
       const view = await toDeckWordView(word, toFrequencyView(lookup, word.id));
       return { ...view, created: existing === null };
+    },
+
+    async updateWordSense(input: UpdateWordSenseInput): Promise<SenseView> {
+      const validated = parseOrThrow(updateWordSenseInputSchema, input, '编辑释义');
+      const word = await requireWord(validated.wordId);
+      if (word.ownerScope !== ownerScope) {
+        throw new ServiceNotFoundError('word', validated.wordId);
+      }
+      const updated = await context.repos.words.updateWordSense({
+        wordId: validated.wordId,
+        senseNo: validated.senseNo,
+        pos: validated.pos,
+        simpleZh: validated.simpleZh,
+        detailedZh: validated.detailedZh ?? null,
+        contextText: validated.contextText ?? null,
+        deviceId: context.device.deviceId(),
+        now: context.clock.now(),
+      });
+      if (updated === null) {
+        throw new ServiceNotFoundError('sense', `${validated.wordId}#${String(validated.senseNo)}`);
+      }
+      return {
+        senseNo: updated.senseNo,
+        pos: updated.pos,
+        simpleZh: updated.simpleZh,
+        detailedZh: updated.detailedZh ?? null,
+        contextText: updated.contextText ?? null,
+      };
     },
 
     async getFrequency(input: {

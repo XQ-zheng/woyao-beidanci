@@ -18,6 +18,7 @@ export const IPC_CHANNELS = [
   'library.addWordToNotebook',
   'library.removeWordFromNotebook',
   'library.isInNotebook',
+  'library.updateWordSense',
   'import.importWords',
   'import.pickFile',
   'import.extractFile',

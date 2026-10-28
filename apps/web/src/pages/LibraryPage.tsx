@@ -11,13 +11,21 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import type { ReactElement } from 'react';
 import { useState } from 'react';
-import type { DeckSummary } from '@woyao/services';
+import type { DeckSummary, DeckWordView } from '@woyao/services';
 
 import { useServiceData } from '../hooks/useServiceData';
 import { deckKindLabel, frequencyLabel } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
 import ImportWordsDialog from './ImportWordsDialog';
 import { PageShell } from './PageShell';
+
+/** 一个义项的编辑草稿。 */
+interface SenseDraft {
+  readonly senseNo: number;
+  readonly pos: string;
+  readonly simpleZh: string;
+  readonly detailedZh: string;
+}
 
 /** 把异常压成可展示的一句话。 */
 function describeError(error: unknown): string {
@@ -39,6 +47,12 @@ export default function LibraryPage(): ReactElement {
   const [message, setMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  /** 展开词条的释义编辑草稿（按 wordId 存）。 */
+  const [senseDrafts, setSenseDrafts] = useState<Record<string, readonly SenseDraft[]>>({});
+  /** 正在保存释义的词条 id。 */
+  const [savingSense, setSavingSense] = useState<string | null>(null);
+  /** 刚保存成功的词条 id。 */
+  const [senseSaved, setSenseSaved] = useState<string | null>(null);
 
   const decks = useServiceData('decks', (service) => service.library.listDecks());
   const visibleDecks: readonly DeckSummary[] = (decks.data ?? []).filter(
@@ -96,6 +110,67 @@ export default function LibraryPage(): ReactElement {
       setActionError(`删除词库失败：${describeError(cause)}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** 展开词条时用当前释义初始化编辑草稿。 */
+  function beginEdit(word: DeckWordView): void {
+    setSenseDrafts((previous) => ({
+      ...previous,
+      [word.wordId]: word.senses.map((sense) => ({
+        senseNo: sense.senseNo,
+        pos: sense.pos,
+        simpleZh: sense.simpleZh,
+        detailedZh: sense.detailedZh ?? '',
+      })),
+    }));
+    setSenseSaved(null);
+    setActionError(null);
+  }
+
+  /** 修改草稿中的一个字段。 */
+  function updateDraft(wordId: string, index: number, patch: Partial<SenseDraft>): void {
+    setSenseDrafts((previous) => {
+      const drafts = previous[wordId];
+      if (drafts === undefined) {
+        return previous;
+      }
+      const next = drafts.map((draft, i) => (i === index ? { ...draft, ...patch } : draft));
+      return { ...previous, [wordId]: next };
+    });
+  }
+
+  /** 保存词条的全部义项（逐条更新，全部成功才算完成）。 */
+  async function saveSenses(word: DeckWordView): Promise<void> {
+    const drafts = senseDrafts[word.wordId];
+    if (drafts === undefined) {
+      return;
+    }
+    for (const [index, draft] of drafts.entries()) {
+      if (draft.simpleZh.trim().length === 0) {
+        setActionError(`第 ${index + 1} 条义项的简明释义不能为空。`);
+        return;
+      }
+    }
+    setSavingSense(word.wordId);
+    setSenseSaved(null);
+    setActionError(null);
+    try {
+      for (const draft of drafts) {
+        await activeServices.library.updateWordSense({
+          wordId: word.wordId,
+          senseNo: draft.senseNo,
+          pos: draft.pos.trim(),
+          simpleZh: draft.simpleZh.trim(),
+          detailedZh: draft.detailedZh.trim() === '' ? null : draft.detailedZh.trim(),
+        });
+      }
+      setSenseSaved(word.wordId);
+      words.reload();
+    } catch (cause: unknown) {
+      setActionError(`保存释义失败：${describeError(cause)}`);
+    } finally {
+      setSavingSense(null);
     }
   }
 
@@ -224,9 +299,14 @@ export default function LibraryPage(): ReactElement {
                       return (
                         <Box key={word.wordId} component="li" sx={{ listStyle: 'none' }}>
                           <ListItemButton
-                            onClick={() => setExpandedWordId(expanded ? null : word.wordId)}
+                            onClick={() => {
+                              setExpandedWordId(expanded ? null : word.wordId);
+                              if (!expanded) {
+                                beginEdit(word);
+                              }
+                            }}
                             aria-expanded={expanded}
-                            title="单击展开或收起释义"
+                            title="单击展开释义，可直接编辑后保存"
                           >
                             <ListItemText
                               primary={
@@ -254,31 +334,67 @@ export default function LibraryPage(): ReactElement {
                               }
                               secondary={
                                 noDefinition
-                                  ? '（暂无释义）— 重新导入该词，AI 会自动补全释义'
+                                  ? '（暂无释义）— 单击展开可直接编辑补全'
                                   : word.senses.map((sense) => sense.simpleZh).join('；')
                               }
                             />
                           </ListItemButton>
                           {expanded ? (
-                            <Box sx={{ pl: 2, pr: 2, pb: 1, display: 'grid', gap: 0.5 }}>
-                              {word.senses.map((sense) => (
-                                <Box key={sense.senseNo}>
-                                  <Typography variant="body2" color="text.secondary">
-                                    {sense.senseNo}. {sense.pos}
-                                  </Typography>
-                                  <Typography variant="body2">{sense.simpleZh}</Typography>
-                                  {sense.detailedZh !== null ? (
+                            <Box sx={{ pl: 2, pr: 2, pb: 2, display: 'grid', gap: 1.5 }}>
+                              <Typography variant="body2" color="text.secondary">
+                                下方释义可直接修改，改完点「保存修改」立即生效。
+                              </Typography>
+                              {(senseDrafts[word.wordId] ?? []).map((draft, index) => (
+                                <Box key={draft.senseNo} sx={{ display: 'grid', gap: 1 }}>
+                                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
                                     <Typography variant="body2" color="text.secondary">
-                                      {sense.detailedZh}
+                                      义项 {index + 1}
                                     </Typography>
-                                  ) : null}
+                                    <TextField
+                                      size="small"
+                                      label="词性"
+                                      value={draft.pos}
+                                      onChange={(event) =>
+                                        updateDraft(word.wordId, index, { pos: event.target.value })
+                                      }
+                                      sx={{ width: 120 }}
+                                    />
+                                  </Box>
+                                  <TextField
+                                    size="small"
+                                    label="简明释义"
+                                    value={draft.simpleZh}
+                                    onChange={(event) =>
+                                      updateDraft(word.wordId, index, { simpleZh: event.target.value })
+                                    }
+                                  />
+                                  <TextField
+                                    size="small"
+                                    label="详细解释（可选）"
+                                    value={draft.detailedZh}
+                                    onChange={(event) =>
+                                      updateDraft(word.wordId, index, { detailedZh: event.target.value })
+                                    }
+                                    multiline
+                                    minRows={2}
+                                  />
                                 </Box>
                               ))}
-                              {noDefinition ? (
-                                <Typography variant="body2" color="warning.main">
-                                  这个词条还没有释义。点「导入单词」重新导入同一个词，AI 会自动补全。
-                                </Typography>
-                              ) : null}
+                              <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+                                <Button
+                                  size="small"
+                                  variant="contained"
+                                  onClick={() => void saveSenses(word)}
+                                  disabled={savingSense === word.wordId}
+                                >
+                                  {savingSense === word.wordId ? '正在保存…' : '保存修改'}
+                                </Button>
+                                {senseSaved === word.wordId ? (
+                                  <Typography variant="body2" color="success.main">
+                                    已保存。
+                                  </Typography>
+                                ) : null}
+                              </Box>
                             </Box>
                           ) : null}
                         </Box>

@@ -118,6 +118,26 @@ export interface SenseView {
   readonly contextText: string | null;
 }
 
+/** 编辑词条义项的入参（词库页「编辑释义」）。 */
+export const updateWordSenseInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  senseNo: z.number().int('义项序号必须是整数').min(1, '义项序号从 1 开始'),
+  pos: z.string().max(32, '词性过长'),
+  simpleZh: z.string().trim().min(1, '简明释义不能为空'),
+  detailedZh: z.string().nullish(),
+  contextText: z.string().nullish(),
+});
+
+/** 编辑义项入参的类型形状。 */
+export interface UpdateWordSenseInput {
+  readonly wordId: string;
+  readonly senseNo: number;
+  readonly pos: string;
+  readonly simpleZh: string;
+  readonly detailedZh?: string | null;
+  readonly contextText?: string | null;
+}
+
 /** 词库内的一个词（含义项与词频）。 */
 export interface DeckWordView {
   readonly wordId: string;

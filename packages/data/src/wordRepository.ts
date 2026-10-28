@@ -272,6 +272,23 @@ export interface WordRepository {
   getWordByLemma(lemma: string, ownerScope: string): WordRecord | null;
   listWordsByIds(ids: readonly string[]): WordRecord[];
   listSenses(wordId: string): WordSenseRecord[];
+  /**
+   * 更新词条的一个义项（词库页「编辑释义」用，6C 补）。
+   *
+   * 按 `wordId + senseNo` 定位**未删除**的义项行，更新词性/释义并推进 revision
+   * （与 createWord 的 upsert 口径一致，同步侧按行合并）。义项不存在时返回 null
+   * （调用方据此抛 NOT_FOUND），成功返回更新后的记录。
+   */
+  updateWordSense(input: {
+    wordId: string;
+    senseNo: number;
+    pos: string;
+    simpleZh: string;
+    detailedZh: string | null;
+    contextText?: string | null;
+    deviceId: string;
+    now: Date;
+  }): WordSenseRecord | null;
   upsertDeck(input: DeckInput): DeckRecord;
   getDeckById(id: string): DeckRecord | null;
   listDecks(ownerScope: string): DeckRecord[];
@@ -932,6 +949,54 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       requireNonEmptyString(wordId, 'wordId');
       const rows = selectSenses.all(wordId) as WordSenseRow[];
       return rows.map(toSenseRecord);
+    },
+
+    updateWordSense(input: {
+      wordId: string;
+      senseNo: number;
+      pos: string;
+      simpleZh: string;
+      detailedZh: string | null;
+      contextText?: string | null;
+      deviceId: string;
+      now: Date;
+    }): WordSenseRecord | null {
+      const wordId = requireNonEmptyString(input.wordId, 'wordId');
+      const device = requireNonEmptyString(input.deviceId, 'deviceId');
+      const nowIso = toIsoInstant(input.now);
+      if (!Number.isInteger(input.senseNo) || input.senseNo < 1) {
+        throw new InvalidRepositoryInputError('senseNo', '义项序号必须是 >=1 的整数');
+      }
+      const simpleZh = requireNonEmptyString(input.simpleZh, 'simpleZh');
+      const sourceIdRow = db
+        .prepare(
+          `SELECT ifnull(source_id, '') AS source_id FROM word_senses
+            WHERE word_id = ? AND sense_no = ? AND deleted_at IS NULL`,
+        )
+        .get(wordId, input.senseNo) as { source_id: string } | undefined;
+      if (sourceIdRow === undefined) {
+        return null;
+      }
+      const updated = db
+        .prepare(
+          `UPDATE word_senses
+              SET pos = ?, simple_zh = ?, detailed_zh = ?, context_text = ?,
+                  updated_at = ?, device_id = ?, revision = revision + 1
+            WHERE word_id = ? AND sense_no = ? AND ifnull(source_id, '') = ? AND deleted_at IS NULL
+            RETURNING ${SENSE_COLUMNS}`,
+        )
+        .get(
+          input.pos ?? '',
+          simpleZh,
+          input.detailedZh ?? null,
+          input.contextText ?? null,
+          nowIso,
+          device,
+          wordId,
+          input.senseNo,
+          sourceIdRow.source_id,
+        ) as WordSenseRow | undefined;
+      return updated === undefined ? null : toSenseRecord(updated);
     },
 
     upsertDeck(input: DeckInput): DeckRecord {

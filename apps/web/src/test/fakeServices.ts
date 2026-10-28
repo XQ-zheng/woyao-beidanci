@@ -223,6 +223,15 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
     addWordToNotebook: vi.fn(async () => undefined),
     removeWordFromNotebook: vi.fn(async () => undefined),
     isInNotebook: vi.fn(async () => false),
+    updateWordSense: vi.fn(
+      async (input: { senseNo: number; simpleZh: string }) => ({
+        senseNo: input.senseNo,
+        pos: '',
+        simpleZh: input.simpleZh,
+        detailedZh: null,
+        contextText: null,
+      }),
+    ),
     createWord: vi.fn(async () => notUsed('library.createWord')),
     getFrequency: vi.fn(async () => notUsed('library.getFrequency')),
     ...overrides.library,

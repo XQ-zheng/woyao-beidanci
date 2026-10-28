@@ -179,6 +179,27 @@ export function createIpcRouter({
       schema: z.object({ wordId: z.string().min(1) }),
       run: async (payload) => services.library.isInNotebook((payload as { wordId: string }).wordId),
     },
+    'library.updateWordSense': {
+      schema: z.object({
+        wordId: z.string().min(1),
+        senseNo: z.number().int().min(1),
+        pos: z.string().max(32),
+        simpleZh: z.string().trim().min(1),
+        detailedZh: z.string().nullish(),
+        contextText: z.string().nullish(),
+      }),
+      run: async (payload) =>
+        services.library.updateWordSense(
+          payload as {
+            wordId: string;
+            senseNo: number;
+            pos: string;
+            simpleZh: string;
+            detailedZh?: string | null;
+            contextText?: string | null;
+          },
+        ),
+    },
     'import.importWords': {
       schema: z.object({
         deckId: z.string().min(1),

@@ -80,6 +80,7 @@ export function createIpcServices(bridge: WoyaoBridge): Services {
     addWordToNotebook: (wordId: string) => call(bridge, 'library.addWordToNotebook', { wordId }),
     removeWordFromNotebook: (wordId: string) => call(bridge, 'library.removeWordFromNotebook', { wordId }),
     isInNotebook: (wordId: string) => call(bridge, 'library.isInNotebook', { wordId }),
+    updateWordSense: (input: unknown) => call(bridge, 'library.updateWordSense', input),
     createWord: () => notWired('自建词'),
     getFrequency: () => notWired('词频查询'),
   };

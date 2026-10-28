@@ -16,6 +16,7 @@
 | LLM 流式对话 | 官方 SDK `create({ stream: true })`，`deepseek-v4.1-flash` | 返回“连通正常”，`finish_reason=stop`，27 tokens |
 | Database 管理面 | `workbuddy_cloudservice_db_list_tables` | 正常返回，当前 0 张表 |
 | Auth 管理面 | `workbuddy_cloudservice_user_list_end_users` | 正常返回，当前 0 个终端用户 |
+| Auth 数据面 | 官方 SDK `cloud.auth.getSession()` | 正常返回，未登录 `signedIn=false`；短信/邮件发送未实测 |
 | Node 运行时 Origin | 上述 SDK 调用来自 Node（无浏览器 Origin） | 通过；**浏览器/Electron 的精确 Origin 仍需在发布域上验证** |
 
 可复现命令：`npm run cloud:check`（需要 `.env.local`，只输出模型数量与回复文本，不输出任何密钥）。

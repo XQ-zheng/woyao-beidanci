@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import type { CardView } from '@woyao/services';
 
 import { useServices } from '../services/ServiceProvider';
+import { speakWithTts } from '../lib/speech';
 import { isChoiceCard } from './wordCardModel';
 
 /** 词卡入参（作答状态由 StudyPage 编排）。 */
@@ -28,22 +29,26 @@ export interface WordCardProps {
   readonly onReveal: () => void;
 }
 
-/** 播放音频（jsdom/无音频设备环境下静默跳过播放本身，不影响学习流程）。 */
-function tryPlay(url: string | null, volume: number): void {
-  if (url === null) {
-    return;
-  }
-  try {
-    const AudioConstructor = (globalThis as { Audio?: typeof Audio }).Audio;
-    if (typeof AudioConstructor === 'undefined') {
-      return;
+/**
+ * 播放音频：在线词典音频 URL 优先（真人发音），没有时用系统 TTS 兜底——
+ * 导入的自建词（短语/缩写/生僻词）在词典里往往没有音频，TTS 保证任何词都能发声。
+ * jsdom/无音频设备环境下静默跳过播放本身，不影响学习流程。
+ */
+function tryPlay(url: string | null, text: string, accent: 'uk' | 'us', volume: number): void {
+  if (url !== null) {
+    try {
+      const AudioConstructor = (globalThis as { Audio?: typeof Audio }).Audio;
+      if (typeof AudioConstructor !== 'undefined') {
+        const audio = new AudioConstructor(url);
+        audio.volume = volume;
+        void audio.play().catch(() => speakWithTts(text, accent, volume));
+        return;
+      }
+    } catch {
+      // 落到 TTS 兜底。
     }
-    const audio = new AudioConstructor(url);
-    audio.volume = volume;
-    void audio.play().catch(() => undefined);
-  } catch {
-    // 播放失败不打断学习：音标始终可见，按钮状态已经说明音频是否可用。
   }
+  speakWithTts(text, accent, volume);
 }
 
 /** 词频标签；`UNKNOWN` 时不展示（不把“未知”当“低频”）。 */
@@ -165,7 +170,7 @@ export function WordCard({
 
   async function switchAccent(next: 'uk' | 'us'): Promise<void> {
     setAccent(next);
-    tryPlay(next === 'uk' ? audioUrlUk : audioUrlUs, volume);
+    tryPlay(next === 'uk' ? audioUrlUk : audioUrlUs, card.lemma, next, volume);
     try {
       await services?.settings.update({ accent: next });
     } catch (error: unknown) {

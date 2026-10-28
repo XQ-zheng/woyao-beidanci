@@ -75,7 +75,7 @@ describe('TodayPage：进入学习', () => {
     expect(await screen.findByText('学习页占位')).toBeInTheDocument();
   });
 
-  it('今天没有待学卡片时留在今日页并说明原因，同时把空会话结束掉', async () => {
+  it('今天没有待学卡片时弹出「重新开始」确认框，并把空会话结束掉', async () => {
     const finishSession = vi.fn(async () => makeSummary());
     const services = createFakeServices({
       study: { startSession: vi.fn(async () => makeSession([])), finishSession },
@@ -84,8 +84,8 @@ describe('TodayPage：进入学习', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '开始学习' }));
 
-    expect(await screen.findByText(/今天没有待学习的单词/)).toBeInTheDocument();
-    expect(screen.queryByText('学习页占位')).toBeNull();
+    expect(await screen.findByText(/今天已经背诵完毕/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新开始学习' })).toBeInTheDocument();
     await waitFor(() => expect(finishSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's-1' })));
   });
 

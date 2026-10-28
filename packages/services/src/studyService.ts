@@ -178,7 +178,7 @@ export interface SessionSummary {
 /** 学习服务契约。 */
 export interface StudyService {
   /** 开始（或重建）今天的学习会话。 */
-  startSession(input: { deckId: string; now: Date; seed?: string }): Promise<SessionView>;
+  startSession(input: { deckId: string; now: Date; seed?: string; force?: boolean }): Promise<SessionView>;
   /** 提交一次作答。 */
   submitAnswer(input: SubmitAnswerInput): Promise<AnswerResult>;
   /** 结束会话并写回汇总（中断的会话也能结束）。 */
@@ -396,7 +396,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
   }
 
   return {
-    async startSession(input: { deckId: string; now: Date; seed?: string }): Promise<SessionView> {
+    async startSession(input: { deckId: string; now: Date; seed?: string; force?: boolean }): Promise<SessionView> {
       const validated = parseOrThrow(startSessionInputSchema, input, '开始学习');
       const plan = await settings.loadReviewPlan();
       const snapshot = await settings.getSnapshot();
@@ -421,11 +421,19 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
         stateByWordId.set(state.wordId, state);
       }
       // 未学过的词 = 词库里有、但还没有学习状态的词（保持词库顺序）。
-      const unseenWordIds = deckWordIds.filter((wordId) => !stateByWordId.has(wordId));
+      // 重学模式（force）：不过滤「今日已学」、不受每日新词上限与复习到期约束——
+      // 词库全部词当作全新一轮重新排队；每次会话的学习事件独立记录，历史互不影响。
+      const unseenWordIds =
+        validated.force === true
+          ? deckWordIds
+          : deckWordIds.filter((wordId) => !stateByWordId.has(wordId));
 
       // 队列完全交给 core：排序、上限截断、屏蔽词过滤、确定性交错都在里面。
       // `newCount`/`reviewCount` 在卡片组装之前就已确定（取队列长度），不受后续组装/重排影响。
-      const queue = buildDailyQueue(states, unseenWordIds, plan, validated.now, seed);
+      const queue =
+        validated.force === true
+          ? buildDailyQueue([], unseenWordIds, { ...plan, dailyNewLimit: 500 }, validated.now, seed)
+          : buildDailyQueue(states, unseenWordIds, plan, validated.now, seed);
 
       // 先组装卡片、后写会话行：卡片组装不依赖 `sessionId`，把“可能抛错的读组装”放到
       // 写库之前，避免组装中途失败留下一条永远空的会话行（那会被会话列表当成一次“0 作答”的历史）。

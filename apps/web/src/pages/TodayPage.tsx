@@ -1,4 +1,9 @@
 import Alert from '@mui/material/Alert';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogTitle from '@mui/material/DialogTitle';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -69,6 +74,10 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  /** 「今日已背完，是否重新开始」确认框。 */
+  const [relearnOpen, setRelearnOpen] = useState(false);
+  /** 确认重学后正在重开会话。 */
+  const [relearning, setRelearning] = useState(false);
 
   useEffect(() => {
     if (services === null) {
@@ -171,7 +180,8 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
         } catch {
           // 收尾失败不改变“今天没有待学词”的结论。
         }
-        setNotice('今天没有待学习的单词：新词已学完、复习也都没到期。可以调整每日计划或换个词库。');
+        // 用户要求：弹确认框询问是否重新开始（重开的一轮记录也保留），而不是只给一句提示。
+        setRelearnOpen(true);
         return;
       }
       navigate('/study', { state: { session } });
@@ -243,6 +253,50 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
           </Button>
         </Box>
       </Box>
+
+      <Dialog open={relearnOpen} onClose={relearning ? undefined : () => setRelearnOpen(false)}>
+        <DialogTitle>今天已经背诵完毕</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            今日的学习计划已经完成。是否需要重新开始学习？
+            重新开始的这一次也会记录在学习历史里，与之前的记录互不影响。
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setRelearnOpen(false)}
+            disabled={relearning}
+          >
+            取消
+          </Button>
+          <Button
+            variant="contained"
+            disabled={relearning}
+            onClick={async () => {
+              if (services === null || selectedDeck === undefined) {
+                return;
+              }
+              setRelearning(true);
+              try {
+                const session: SessionView = await services.study.startSession({
+                  deckId: selectedDeck.deckId,
+                  force: true,
+                  now: nowRef.current(),
+                });
+                setRelearnOpen(false);
+                navigate('/study', { state: { session } });
+              } catch (cause: unknown) {
+                setNotice(`重新开始失败：${describeError(cause)}`);
+                setRelearnOpen(false);
+              } finally {
+                setRelearning(false);
+              }
+            }}
+          >
+            {relearning ? '正在准备…' : '重新开始学习'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </PageShell>
   );
 }

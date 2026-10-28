@@ -52,7 +52,7 @@ describe('路由接线（6B 学习流程）', () => {
     expect(await screen.findByRole('heading', { level: 2, name: '学习' }, FIND_OPTIONS)).toBeInTheDocument();
     // 标题在加载态就已渲染，正文要等“没有 deckId”的分支落定，所以同样用 find* 等待。
     expect(
-      await screen.findByText('本次会话没有卡片，请返回今日学习。', {}, FIND_OPTIONS),
+      await screen.findByText(/今天已经背诵完毕/, {}, FIND_OPTIONS),
     ).toBeInTheDocument();
   });
 

@@ -376,6 +376,12 @@ export const startSessionInputSchema = z.strictObject({
   seed: z.string().min(1, '种子不能为空').optional(),
   exam: z.string().min(1, '考试标签不能为空').optional(),
   corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
+  /**
+   * 重学模式：忽略「今日已学」过滤与每日新词上限，把词库全部词重新组一轮
+   * （用户在「今天已经背诵完毕」确认框里选择重新开始时传入）。
+   * 两次会话的学习记录**都会保留**——会话与事件本来就按次独立记录。
+   */
+  force: z.boolean().optional(),
 });
 
 /** 提交作答入参。 */

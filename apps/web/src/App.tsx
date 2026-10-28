@@ -1,11 +1,15 @@
 import AppBar from '@mui/material/AppBar';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import CssBaseline from '@mui/material/CssBaseline';
 import Divider from '@mui/material/Divider';
+import Drawer from '@mui/material/Drawer';
 import Toolbar from '@mui/material/Toolbar';
 import Typography from '@mui/material/Typography';
 import { ThemeProvider } from '@mui/material/styles';
 import type { ReactElement } from 'react';
-import { BrowserRouter } from 'react-router-dom';
+import { useState } from 'react';
+import { BrowserRouter, useLocation } from 'react-router-dom';
 import type { Services } from '@woyao/services';
 
 import { APP_NAME } from './bootstrap';
@@ -16,10 +20,46 @@ import { ServiceProvider } from './services/ServiceProvider';
 import { appTheme } from './theme';
 
 /**
- * 应用外壳：桌面为左侧栏 + 主内容区，移动为顶栏 + 固定底栏。
- * 布局用 Tailwind 工具类，视觉样式全部来自 MUI 主题。
+ * 学习作答期间隐藏左侧导航（用户要求：单词独占全屏，避免分心），
+ * 右上角保留「☰」按钮随时打开抽屉查看导航。
  */
+function isImmersiveRoute(pathname: string): boolean {
+  return pathname === '/study';
+}
+
+/** 应用外壳：桌面为左侧栏 + 主内容区，移动为顶栏 + 固定底栏。 */
 function AppShell(): ReactElement {
+  const location = useLocation();
+  const immersive = isImmersiveRoute(location.pathname);
+  const [navOpen, setNavOpen] = useState(false);
+
+  if (immersive) {
+    return (
+      <div className="flex min-h-screen flex-col">
+        <Button
+          aria-label="查看导航"
+          onClick={() => setNavOpen(true)}
+          variant="contained"
+          sx={{ position: 'fixed', top: 12, right: 16, zIndex: (theme) => theme.zIndex.appBar, minWidth: 48, px: 1.5, fontSize: 20 }}
+        >
+          ☰
+        </Button>
+        <Drawer open={navOpen} onClose={() => setNavOpen(false)}>
+          <Box sx={{ width: 240 }} role="presentation" onClick={() => setNavOpen(false)}>
+            <Typography variant="h6" sx={{ px: 2, py: 2 }}>
+              {APP_NAME}
+            </Typography>
+            <Divider />
+            <AppNavigation variant="desktop" />
+          </Box>
+        </Drawer>
+        <main className="flex-1">
+          <AppRoutes />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       <header className="shrink-0 md:w-60">

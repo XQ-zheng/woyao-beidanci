@@ -1,6 +1,6 @@
 import { ThemeProvider } from '@mui/material/styles';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthSession } from '@woyao/services';
 
 import { ServiceProvider } from '../services/ServiceProvider';
@@ -26,6 +26,18 @@ function renderAccount(services = createFakeServices()): void {
   );
 }
 
+/** 发码成功后填入验证码并点按钮的公共动作。 */
+async function requestCodeAndFill(code: string): Promise<void> {
+  fireEvent.change(await screen.findByLabelText('手机号'), { target: { value: '13800138000' } });
+  fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
+  expect(await screen.findByText(/验证码已发送至/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('验证码'), { target: { value: code } });
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 describe('AccountPage：手机验证码登录', () => {
   it('未登录时显示手机号与验证码输入，不显示任何 token', async () => {
     renderAccount();
@@ -33,6 +45,8 @@ describe('AccountPage：手机验证码登录', () => {
     expect(await screen.findByRole('tab', { name: '手机验证码' })).toBeInTheDocument();
     expect(screen.getByLabelText('手机号')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '获取验证码' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登录' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '注册' })).toBeInTheDocument();
     expect(screen.queryByText('secret-token')).toBeNull();
   });
 
@@ -57,21 +71,17 @@ describe('AccountPage：手机验证码登录', () => {
     expect(requestOtp).not.toHaveBeenCalled();
   });
 
-  it('发码 → 验码 → 显示已登录，并把 challenge 原样带回', async () => {
+  it('老用户点「登录」：发码 → 验码 → 显示已登录，并把 challenge 原样带回', async () => {
     const requestOtp = vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true }));
     const verifyOtp = vi.fn(async () => SESSION);
     renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
 
-    fireEvent.change(await screen.findByLabelText('手机号'), { target: { value: '13800138000' } });
-    fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
-
-    expect(await screen.findByText(/验证码已发送/)).toBeInTheDocument();
+    await requestCodeAndFill('123456');
     expect(requestOtp).toHaveBeenCalledWith({ channel: 'phone', target: '13800138000' });
 
-    fireEvent.change(screen.getByLabelText('验证码'), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录 / 注册' }));
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
-    expect(await screen.findByText('账号已登录。token 不会显示在界面上，也不会写进日志。')).toBeInTheDocument();
+    expect(await screen.findByText('登录成功。')).toBeInTheDocument();
     expect(verifyOtp).toHaveBeenCalledWith({
       channel: 'phone',
       target: '13800138000',
@@ -82,12 +92,78 @@ describe('AccountPage：手机验证码登录', () => {
     expect(screen.queryByText('secret-token')).toBeNull();
   });
 
+  it('新用户点「注册」：走注册分支并提示下次直接登录', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-new', isExistingUser: false }));
+    const verifyOtp = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
+
+    await requestCodeAndFill('654321');
+    fireEvent.click(screen.getByRole('button', { name: '注册' }));
+
+    expect(await screen.findByText(/注册成功，已自动登录/)).toBeInTheDocument();
+    expect(verifyOtp).toHaveBeenCalledWith(
+      expect.objectContaining({ challengeId: 'ch-new', isExistingUser: false, token: '654321' }),
+    );
+  });
+
+  it('未注册的号码点「登录」时本地指路去注册，不消耗验证码', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-new', isExistingUser: false }));
+    const verifyOtp = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
+
+    await requestCodeAndFill('111111');
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    expect(await screen.findByText(/还没有注册，请点「注册」/)).toBeInTheDocument();
+    expect(verifyOtp).not.toHaveBeenCalled();
+  });
+
+  it('已注册的号码点「注册」时提示直接登录', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true }));
+    const verifyOtp = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
+
+    await requestCodeAndFill('222222');
+    fireEvent.click(screen.getByRole('button', { name: '注册' }));
+
+    expect(await screen.findByText(/已经注册过了，请直接点「登录」/)).toBeInTheDocument();
+    expect(verifyOtp).not.toHaveBeenCalled();
+  });
+
+  it('全角验证码会被归一化成半角再提交', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true }));
+    const verifyOtp = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
+
+    await requestCodeAndFill('１２３４５６');
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(verifyOtp).toHaveBeenCalled());
+    expect(verifyOtp).toHaveBeenCalledWith(expect.objectContaining({ token: '123456' }));
+  });
+
+  it('验码失败时展示原因、重置 challenge 并放开重发', async () => {
+    const requestOtp = vi.fn(async () => ({ challengeId: 'ch-1', isExistingUser: true }));
+    const verifyOtp = vi.fn(async () => {
+      throw new Error('verification code does not match the id');
+    });
+    renderAccount(createFakeServices({ auth: { requestOtp, verifyOtp } }));
+
+    await requestCodeAndFill('000000');
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    expect(await screen.findByText(/验证码校验失败：verification code does not match the id/)).toBeInTheDocument();
+    expect(await screen.findByText(/已重置验证码状态/)).toBeInTheDocument();
+    // 倒计时被清掉，可以立刻重新发码，而不是干等 60 秒。
+    expect(screen.getByRole('button', { name: '获取验证码' })).toBeEnabled();
+  });
+
   it('未获取验证码就提交时本地拦截', async () => {
     const verifyOtp = vi.fn();
     renderAccount(createFakeServices({ auth: { verifyOtp } }));
 
     fireEvent.change(await screen.findByLabelText('手机号'), { target: { value: '13800138000' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录 / 注册' }));
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
 
     expect(await screen.findByText('请先为当前手机号/邮箱获取验证码。')).toBeInTheDocument();
     expect(verifyOtp).not.toHaveBeenCalled();
@@ -103,6 +179,38 @@ describe('AccountPage：手机验证码登录', () => {
     fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
 
     expect(await screen.findByText(/发送验证码失败：短信额度不足/)).toBeInTheDocument();
+  });
+});
+
+describe('AccountPage：下次自动登录', () => {
+  it('默认勾选，取消后写入本地偏好', async () => {
+    renderAccount();
+
+    const checkbox = await screen.findByRole('checkbox', { name: /下次自动登录/ });
+    expect(checkbox).toBeChecked();
+
+    fireEvent.click(checkbox);
+
+    expect(checkbox).not.toBeChecked();
+    expect(window.localStorage.getItem('woyao.autoLogin')).toBe('0');
+  });
+
+  it('偏好为关闭时，启动会用上次的会话退出登录', async () => {
+    window.localStorage.setItem('woyao.autoLogin', '0');
+    const signOut = vi.fn(async () => undefined);
+    const getSession = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { getSession, signOut } }));
+
+    await waitFor(() => expect(signOut).toHaveBeenCalledWith(SESSION));
+    expect(await screen.findByText(/已按「下次自动登录」的关闭设置退出上次登录/)).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '手机验证码' })).toBeInTheDocument();
+  });
+
+  it('偏好为开启时，已有会话直接显示已登录', async () => {
+    const getSession = vi.fn(async () => SESSION);
+    renderAccount(createFakeServices({ auth: { getSession } }));
+
+    expect(await screen.findByText(/账号已登录/)).toBeInTheDocument();
   });
 });
 

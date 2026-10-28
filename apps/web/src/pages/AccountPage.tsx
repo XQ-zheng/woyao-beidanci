@@ -1,7 +1,9 @@
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Checkbox from '@mui/material/Checkbox';
 import Divider from '@mui/material/Divider';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
@@ -19,10 +21,87 @@ const PHONE_PATTERN = /^1\d{10}$/u;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 /** 发码后倒计时秒数。 */
 const RESEND_SECONDS = 60;
+/** 「下次自动登录」偏好的本地存储键（`'0'` 表示关闭，缺省视为开启）。 */
+const AUTO_LOGIN_STORAGE_KEY = 'woyao.autoLogin';
+/** 点击按钮表达的用户意图：登录已有账号，还是注册新账号。 */
+type AuthIntent = 'signIn' | 'signUp';
 
 /** 把异常压成可展示的一句话。 */
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 归一化用户输入：全角数字/字母转半角，去掉所有空白。
+ *
+ * 中文输入法下「１２３４５６」这类全角数字很常见，直接提交只会换回一句
+ * 「验证码不匹配」，用户完全看不出是自己输错了字符宽度。
+ *
+ * @param value 原始输入。
+ * @returns 半角、无空白的字符串。
+ */
+function normalizeInput(value: string): string {
+  return value
+    .replace(/[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]/gu, (char) =>
+      String.fromCharCode(char.charCodeAt(0) - 0xfee0),
+    )
+    .replace(/\s+/gu, '');
+}
+
+/**
+ * 按渠道归一化验证码：手机只保留数字，邮箱只去空白。
+ *
+ * @param value 原始输入。
+ * @param channel 渠道。
+ * @returns 可提交的验证码。
+ */
+function normalizeCode(value: string, channel: 'phone' | 'email'): string {
+  const ascii = normalizeInput(value);
+  return channel === 'phone' ? ascii.replace(/\D+/gu, '') : ascii;
+}
+
+/**
+ * 脱敏展示手机号/邮箱，避免把完整号码铺在提示语里。
+ *
+ * @param target 手机号或邮箱。
+ * @param channel 渠道。
+ * @returns 脱敏后的文本。
+ */
+function maskTarget(target: string, channel: 'phone' | 'email'): string {
+  if (channel === 'phone' && target.length === 11) {
+    return `${target.slice(0, 3)}****${target.slice(-4)}`;
+  }
+  const at = target.indexOf('@');
+  if (channel === 'email' && at > 1) {
+    return `${target.slice(0, 2)}***${target.slice(at)}`;
+  }
+  return target;
+}
+
+/**
+ * 读取「下次自动登录」偏好。读不到时按开启处理（用户没设过就当想省事）。
+ *
+ * @returns 是否自动登录。
+ */
+function readAutoLoginPreference(): boolean {
+  try {
+    return window.localStorage.getItem(AUTO_LOGIN_STORAGE_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 写入「下次自动登录」偏好；隐私模式下写失败就静默忽略（不影响本次登录）。
+ *
+ * @param value 是否自动登录。
+ */
+function writeAutoLoginPreference(value: boolean): void {
+  try {
+    window.localStorage.setItem(AUTO_LOGIN_STORAGE_KEY, value ? '1' : '0');
+  } catch {
+    // 存储不可用时只影响“下次”，本次登录仍然有效。
+  }
 }
 
 /** 同步状态的中文说明。 */
@@ -41,7 +120,8 @@ function syncStatusText(report: SyncReport): string {
  * 账号页（`/account`）。
  *
  * 登录采用 WorkBuddy Cloud 真实支持的两段式 OTP：手机短信为主、邮箱验证码为辅。
- * 微信网页登录需要发布后的 HTTPS 域名，QQ 没有 Provider，两者都不做假入口。
+ * 「登录」与「注册」是两个独立按钮，但共用同一次发码——上游按 `isExistingUser`
+ * 判断走登录还是注册，点错按钮时直接指路改点另一个，别把验证码白白消耗掉。
  * token 不显示在界面上，桌面端由主进程用系统安全存储落盘。
  */
 export default function AccountPage(): ReactElement {
@@ -56,11 +136,14 @@ export default function AccountPage(): ReactElement {
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authHint, setAuthHint] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [autoLogin, setAutoLogin] = useState<boolean>(readAutoLoginPreference);
   const [report, setReport] = useState<SyncReport | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
   // 首屏恢复登录态；未配置云时如实显示错误，不伪造“已登录”。
+  // 用户关掉「下次自动登录」时，下一次打开就静默退出上次的会话。
   useEffect(() => {
     if (services === null) {
       return;
@@ -68,10 +151,19 @@ export default function AccountPage(): ReactElement {
     let active = true;
     void services.auth
       .getSession()
-      .then((current) => {
-        if (active) {
-          setSession(current);
+      .then(async (current) => {
+        if (!active) {
+          return;
         }
+        if (current !== null && !readAutoLoginPreference()) {
+          await services.auth.signOut(current).catch(() => undefined);
+          if (active) {
+            setSession(null);
+            setNotice('已按「下次自动登录」的关闭设置退出上次登录，请重新登录。');
+          }
+          return;
+        }
+        setSession(current);
       })
       .catch((cause: unknown) => {
         if (active) {
@@ -103,7 +195,7 @@ export default function AccountPage(): ReactElement {
 
   /** 校验当前输入；返回错误文案或 null。 */
   function validateTarget(): string | null {
-    const value = target.trim();
+    const value = normalizeInput(target);
     if (value.length === 0) {
       return channel === 'phone' ? '请先填写手机号。' : '请先填写邮箱。';
     }
@@ -122,16 +214,17 @@ export default function AccountPage(): ReactElement {
       setAuthError(invalid);
       return;
     }
-    const value = target.trim();
+    const value = normalizeInput(target);
     setSending(true);
     setAuthError(null);
+    setAuthHint(null);
     setNotice(null);
     try {
       const result = await activeServices.auth.requestOtp({ channel, target: value });
       setChallenge(result);
       setSentTo(value);
       setCountdown(RESEND_SECONDS);
-      setNotice('验证码已发送，请查看手机短信或邮箱。');
+      setNotice(`验证码已发送至 ${maskTarget(value, channel)}，只有最新一条有效。`);
     } catch (cause: unknown) {
       setChallenge(null);
       setAuthError(`发送验证码失败：${describeError(cause)}`);
@@ -140,17 +233,34 @@ export default function AccountPage(): ReactElement {
     }
   }
 
-  async function verifyCode(): Promise<void> {
-    if (challenge === null || sentTo !== target.trim()) {
+  /**
+   * 验码并完成登录或注册。
+   *
+   * @param intent 用户点的是「登录」还是「注册」。
+   */
+  async function verifyCode(intent: AuthIntent): Promise<void> {
+    const value = normalizeInput(target);
+    if (challenge === null || sentTo !== value) {
       setAuthError('请先为当前手机号/邮箱获取验证码。');
       return;
     }
-    if (token.trim().length === 0) {
+    const code = normalizeCode(token, channel);
+    if (code.length === 0) {
       setAuthError('请输入验证码。');
+      return;
+    }
+    // 「是否已注册」由发码接口给出；点错按钮时先指路，别让服务端把验证码消耗掉。
+    if (intent === 'signIn' && !challenge.isExistingUser) {
+      setAuthError('该手机号还没有注册，请点「注册」完成首次注册。');
+      return;
+    }
+    if (intent === 'signUp' && challenge.isExistingUser) {
+      setAuthError('该手机号已经注册过了，请直接点「登录」。');
       return;
     }
     setVerifying(true);
     setAuthError(null);
+    setAuthHint(null);
     setNotice(null);
     try {
       const signedIn = await activeServices.auth.verifyOtp({
@@ -158,15 +268,21 @@ export default function AccountPage(): ReactElement {
         target: sentTo,
         challengeId: challenge.challengeId,
         isExistingUser: challenge.isExistingUser,
-        token: token.trim(),
+        token: code,
       });
       setSession(signedIn);
       setChallenge(null);
       setToken('');
       setCountdown(0);
-      setNotice('登录成功。');
+      setNotice(intent === 'signUp' ? '注册成功，已自动登录。下次打开直接点「登录」即可。' : '登录成功。');
     } catch (cause: unknown) {
       setAuthError(`验证码校验失败：${describeError(cause)}`);
+      // 失败后这次 challenge 基本作废（码错/过期/已被用掉），立刻清掉并放开重发，
+      // 否则用户只能对着 60 秒倒计时干等。
+      setChallenge(null);
+      setSentTo('');
+      setCountdown(0);
+      setAuthHint('已重置验证码状态：请重新点「获取验证码」，并只填最新一条短信里的数字。');
     } finally {
       setVerifying(false);
     }
@@ -228,7 +344,7 @@ export default function AccountPage(): ReactElement {
         ) : (
           <Box sx={{ display: 'grid', gap: 1.5 }}>
             <Typography variant="subtitle1" component="h3">
-              登录
+              登录 / 注册
             </Typography>
             <Tabs
               value={channel}
@@ -242,6 +358,7 @@ export default function AccountPage(): ReactElement {
                 setToken('');
                 setCountdown(0);
                 setAuthError(null);
+                setAuthHint(null);
                 setNotice(null);
               }}
               aria-label="登录方式"
@@ -260,6 +377,7 @@ export default function AccountPage(): ReactElement {
                 setChallenge(null);
                 setSentTo('');
                 setAuthError(null);
+                setAuthHint(null);
               }}
               autoComplete={channel === 'phone' ? 'tel' : 'email'}
               helperText={channel === 'phone' ? '大陆 11 位手机号' : '用于辅助登录，可选'}
@@ -286,17 +404,47 @@ export default function AccountPage(): ReactElement {
               value={token}
               onChange={(event) => setToken(event.target.value)}
               slotProps={{ htmlInput: { inputMode: 'numeric', autoComplete: 'one-time-code' } }}
-              sx={{ maxWidth: 200 }}
+              helperText="新用户点「注册」，老用户点「登录」；同一次发码两个按钮通用"
+              sx={{ maxWidth: 360 }}
             />
 
-            <Box>
-              <Button variant="contained" onClick={() => void verifyCode()} disabled={verifying} sx={{ minHeight: 44 }}>
-                {verifying ? '正在验证…' : '登录 / 注册'}
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Button
+                variant="contained"
+                onClick={() => void verifyCode('signIn')}
+                disabled={verifying}
+                sx={{ minHeight: 44, minWidth: 120 }}
+              >
+                {verifying ? '正在验证…' : '登录'}
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={() => void verifyCode('signUp')}
+                disabled={verifying}
+                sx={{ minHeight: 44, minWidth: 120 }}
+              >
+                注册
               </Button>
             </Box>
 
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={autoLogin}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setAutoLogin(next);
+                    writeAutoLoginPreference(next);
+                  }}
+                />
+              }
+              label="下次自动登录（本机保留加密凭据；取消勾选则下次打开需重新登录）"
+              sx={{ alignItems: 'flex-start', '& .MuiFormControlLabel-label': { pt: 1, fontSize: 14 } }}
+            />
+
             {notice !== null ? <Alert severity="success">{notice}</Alert> : null}
             {authError !== null ? <Alert severity="error">{authError}</Alert> : null}
+            {authHint !== null ? <Alert severity="warning">{authHint}</Alert> : null}
 
             <Typography variant="body2" color="text.secondary">
               微信登录需要应用发布到 HTTPS 域名后才能接入回调；QQ 登录在 WorkBuddy Cloud Auth 中没有

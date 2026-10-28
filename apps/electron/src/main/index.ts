@@ -4,7 +4,7 @@
  * 生命周期很短：加单实例锁 → 装配数据库与服务 → 注册 IPC → 开窗口 → 按设置接托盘/自启。
  * 业务规则一律在 `@woyao/services` 里，这里只做“平台接线”。
  */
-import { existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { app, BrowserWindow, ipcMain, Menu, net } from 'electron';
@@ -71,6 +71,32 @@ function resolveIconPath(): string {
 let mainWindow: BrowserWindow | null = null;
 /** 冒烟诊断收集器（仅 `WOYAO_SMOKE_OUT` 存在时非 null；正常路径的报告也要读它）。 */
 let smokeDiagnostics: SmokeDiagnostics | null = null;
+/** 诊断日志上限：超过就清空重写，避免长期运行把磁盘写满。 */
+const IPC_ERROR_LOG_LIMIT_BYTES = 256 * 1024;
+
+/**
+ * 把一次失败的 IPC 调用追加到 `<userData>/logs/ipc-errors.log`。
+ *
+ * 打包版是 GUI 子系统，没有终端可看；用户能给的线索通常只有一张截图。
+ * 只记录频道与错误码/文案，**不记 payload**——里面有手机号、验证码等。
+ *
+ * @param entry 一行描述。
+ */
+function appendIpcError(entry: string): void {
+  try {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    mkdirSync(logDir, { recursive: true });
+    const file = path.join(logDir, 'ipc-errors.log');
+    const line = `${new Date().toISOString()} ${entry}\n`;
+    if (existsSync(file) && statSync(file).size > IPC_ERROR_LOG_LIMIT_BYTES) {
+      writeFileSync(file, line, 'utf8');
+      return;
+    }
+    appendFileSync(file, line, 'utf8');
+  } catch (error) {
+    console.warn('[woyao] 写诊断日志失败：', error instanceof Error ? error.message : error);
+  }
+}
 /** 是否正在退出（用于区分“关窗口”和“退应用”）。 */
 let quitting = false;
 /** 当前是否“关闭窗口时最小化到托盘”（来自设置，默认 false）。 */
@@ -129,6 +155,11 @@ if (!hasLock) {
           // 设置改完立即生效：自启是系统状态，托盘是窗口行为，都要跟着最新快照走。
           if (channel === 'settings.update' && result.ok) {
             applySettings(result.data as SettingsSnapshot);
+          }
+          // 失败落盘：打包版没有终端，用户能提供的往往只有一张截图；
+          // 只记频道与错误码/文案，不记 payload（里面可能有手机号与验证码）。
+          if (!result.ok) {
+            appendIpcError(`${channel} -> ${result.error.code}: ${result.error.message}`);
           }
           return result;
         });

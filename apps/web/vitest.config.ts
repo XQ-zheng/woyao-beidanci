@@ -24,6 +24,11 @@ export default mergeConfig(
        * 清空该目录（在某些环境会触发批量删除保护而直接失败）。测试量很小，关掉更稳。
        */
       fsModuleCache: false,
+      /**
+       * 单个用例上限放宽到 20s：设置页等懒加载页面在冷启动时要现场转换 MUI 组件，
+       * 并行跑四个 workspace 时会接近默认 5s。放宽的只是等待上限，断言本身不变。
+       */
+      testTimeout: 20000,
     },
   }),
 );

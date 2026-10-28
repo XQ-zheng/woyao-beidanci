@@ -41,6 +41,7 @@ export default defineConfig({
       { find: '@woyao/services', replacement: workspaceSrc('packages/services/src') },
       { find: '@woyao/cloud', replacement: workspaceSrc('packages/cloud/src') },
       { find: '@woyao/exporters', replacement: workspaceSrc('packages/exporters/src') },
+      { find: '@woyao/importer', replacement: workspaceSrc('packages/importer/src') },
       { find: '@woyao/assets', replacement: workspaceSrc('packages/assets') },
       { find: '@woyao/web', replacement: workspaceSrc('apps/web/src') },
       { find: '@woyao/electron', replacement: workspaceSrc('apps/electron/src') },

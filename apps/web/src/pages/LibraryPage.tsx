@@ -16,6 +16,7 @@ import type { DeckSummary } from '@woyao/services';
 import { useServiceData } from '../hooks/useServiceData';
 import { deckKindLabel, frequencyLabel } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
+import ImportWordsDialog from './ImportWordsDialog';
 import { PageShell } from './PageShell';
 
 /** 把异常压成可展示的一句话。 */
@@ -37,6 +38,7 @@ export default function LibraryPage(): ReactElement {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const decks = useServiceData('decks', (service) => service.library.listDecks());
   const visibleDecks: readonly DeckSummary[] = (decks.data ?? []).filter(
@@ -174,6 +176,14 @@ export default function LibraryPage(): ReactElement {
                   <Box sx={{ flex: 1 }} />
                   <Button
                     size="small"
+                    variant="contained"
+                    disabled={busy}
+                    onClick={() => setImportOpen(true)}
+                  >
+                    导入单词
+                  </Button>
+                  <Button
+                    size="small"
                     color="error"
                     variant="outlined"
                     disabled={busy}
@@ -188,9 +198,21 @@ export default function LibraryPage(): ReactElement {
                 ) : words.error !== null ? (
                   <Alert severity="error">{words.error}</Alert>
                 ) : (words.data ?? []).length === 0 ? (
-                  <Typography variant="body1" color="text.secondary">
-                    这个词库还没有单词。导入词表后即可在这里查看。
-                  </Typography>
+                  <Box sx={{ display: 'grid', gap: 1.5 }}>
+                    <Typography variant="body1" color="text.secondary">
+                      这个词库还没有单词。点「导入单词」把英文单词/短语加进来。
+                    </Typography>
+                    <Box>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        disabled={busy}
+                        onClick={() => setImportOpen(true)}
+                      >
+                        导入单词
+                      </Button>
+                    </Box>
+                  </Box>
                 ) : (
                   <List dense aria-label="词表">
                     {(words.data ?? []).map((word) => {
@@ -248,6 +270,19 @@ export default function LibraryPage(): ReactElement {
           </Box>
         </Box>
       </Box>
+
+      {activeDeck !== null ? (
+        <ImportWordsDialog
+          open={importOpen}
+          deckId={activeDeck.deckId}
+          deckName={activeDeck.name}
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            decks.reload();
+            words.reload();
+          }}
+        />
+      ) : null}
     </PageShell>
   );
 }

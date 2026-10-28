@@ -75,7 +75,11 @@ const RUNTIME_DEPENDENCIES = [
   'better-sqlite3',
   'docx',
   'exceljs',
+  'jszip',
   'pdfkit',
+  'pdfjs-dist',
+  'tesseract.js',
+  'tesseract.js-core',
   '@tencent-ai/workbuddy-cloud-sdk',
   'zod',
 ];
@@ -229,6 +233,7 @@ function assertBuildOutputs() {
     path.join(repoRoot, 'apps', 'electron', 'assets', 'icon.png'),
     path.join(repoRoot, 'apps', 'electron', 'assets', 'icon.ico'),
     path.join(repoRoot, 'packages', 'exporters', 'fonts', 'NotoSansSC-Variable.ttf'),
+    path.join(repoRoot, 'packages', 'importer', 'assets', 'tessdata', 'eng.traineddata.gz'),
   ];
   const missing = required.filter((file) => !existsSync(file));
   if (missing.length > 0) {
@@ -302,7 +307,10 @@ function assertRuntimeDependenciesCovered() {
     if (nodeBuiltins.has(name) || EXTERNAL_ALLOWLIST.has(name)) {
       return false;
     }
-    return true;
+    // 子路径导入（如 `pdfjs-dist/legacy/build/pdf.mjs`）也算已覆盖：
+    // 只要包名进了 RUNTIME_DEPENDENCIES，它的子路径文件就随包一起被复制。
+    const coveredByPrefix = RUNTIME_DEPENDENCIES.some((dep) => name === dep || name.startsWith(`${dep}/`));
+    return !coveredByPrefix;
   });
   if (unknown.length > 0) {
     throw new Error(
@@ -599,6 +607,14 @@ function assembleApp(closure) {
       copyFileSync(source, path.join(fontsDir, license));
     }
   }
+
+  // 7) OCR 语言包：importer.ts 会查 `resources/tessdata/eng.traineddata.gz`。
+  const tessdataDir = path.join(stagingDir, 'resources', 'tessdata');
+  mkdirSync(tessdataDir, { recursive: true });
+  copyFileSync(
+    path.join(repoRoot, 'packages', 'importer', 'assets', 'tessdata', 'eng.traineddata.gz'),
+    path.join(tessdataDir, 'eng.traineddata.gz'),
+  );
 }
 
 /**

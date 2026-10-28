@@ -184,6 +184,7 @@ function notUsed(name: string): never {
 export interface FakeServiceOverrides {
   readonly settings?: Partial<Services['settings']>;
   readonly library?: Partial<Services['library']>;
+  readonly import?: Partial<Services['import']>;
   readonly study?: Partial<Services['study']>;
   readonly report?: Partial<Services['report']>;
   readonly content?: Partial<Services['content']>;
@@ -282,6 +283,17 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
     ...overrides.sync,
   };
 
+  const importService: Services['import'] = {
+    importWords: vi.fn(async () => ({
+      imported: 0,
+      duplicates: 0,
+      withDefinition: 0,
+      withoutDefinition: 0,
+      rows: [],
+    })),
+    ...overrides.import,
+  };
+
   // 未使用的服务不做实现：被调用就抛错，能立刻暴露“页面偷偷用了 6B 之外的能力”。
   const unused = new Proxy(
     {},
@@ -293,6 +305,7 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
   return {
     settings,
     library,
+    import: importService,
     study,
     report,
     content,

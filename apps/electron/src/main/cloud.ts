@@ -139,12 +139,15 @@ export function createAuthTraceFetch(logPath: string): typeof globalThis.fetch {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       const requestPath = url.replace(/^https?:\/\/[^/]+/u, '');
+      const requestBody = typeof init?.body === 'string' ? redactAuthTrace(init.body) : null;
       const body = await response.clone().text();
       const line = `${JSON.stringify({
         at: new Date().toISOString(),
         path: requestPath,
         status: response.status,
         ms: Date.now() - startedAt,
+        // 请求体也记，但同样脱敏：登录兜底会尝试多种字段写法，必须能看出是哪种生效。
+        req: requestBody,
         body: redactAuthTrace(body).slice(0, 600),
       })}\n`;
       mkdirSync(path.dirname(logPath), { recursive: true });

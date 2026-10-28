@@ -16,6 +16,7 @@
     "@woyao/core": "*",
     "@woyao/data": "*",
     "@woyao/exporters": "*",
+    "@woyao/importer": "*",
     "@woyao/services": "*",
     "zod": "^4.6.7",
     "@woyao/cloud": "*",

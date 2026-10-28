@@ -19,6 +19,7 @@ export * from './dto';
 export * from './errors';
 export * from './exportService';
 export * from './frequencyView';
+export * from './importService';
 export * from './libraryService';
 export * from './onlineService';
 export * from './ports';

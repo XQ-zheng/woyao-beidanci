@@ -29,6 +29,8 @@
       "@woyao/cloud/*": ["./packages/cloud/src/*"],
       "@woyao/exporters": ["./packages/exporters/src/index.ts"],
       "@woyao/exporters/*": ["./packages/exporters/src/*"],
+      "@woyao/importer": ["./packages/importer/src/index.ts"],
+      "@woyao/importer/*": ["./packages/importer/src/*"],
       "@woyao/assets": ["./packages/assets/index.ts"],
       "@woyao/assets/*": ["./packages/assets/*"],
       "@woyao/web/*": ["./apps/web/src/*"],

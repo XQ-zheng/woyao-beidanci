@@ -1,0 +1,27 @@
+{
+  "name": "@woyao/importer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "我要背单词的导入器：从文本 / Excel / Word / PDF / PPT / 图片里提取英文单词与短语",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^5.4.530",
+    "tesseract.js": "^6.0.0"
+  }
+}

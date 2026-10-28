@@ -15,6 +15,7 @@ import { createAssociationService, type AssociationService } from './association
 import { createAuthService, type AuthService } from './authService';
 import { createContentService, type ContentService } from './contentService';
 import { createExportService, type ExportService } from './exportService';
+import { createImportService, type ImportService } from './importService';
 import { createLibraryService, type LibraryService } from './libraryService';
 import { createOnlineService, type OnlineService } from './onlineService';
 import type { ServiceContext } from './ports';
@@ -27,6 +28,7 @@ import { createSyncService, type SyncService } from './syncService';
 export interface Services {
   readonly settings: SettingsService;
   readonly library: LibraryService;
+  readonly import: ImportService;
   readonly study: StudyService;
   readonly report: ReportService;
   readonly content: ContentService;
@@ -65,6 +67,7 @@ export function createServiceRuntime(options: CreateRuntimeOptions): Services {
 
   const settings = createSettingsService({ context, defaultTimeZone });
   const library = createLibraryService({ context, ownerScope });
+  const importService = createImportService({ context, library, ownerScope });
   const online = createOnlineService({ context });
   const study = createStudyService({ context, settings, ownerScope });
   const content = createContentService({
@@ -86,6 +89,7 @@ export function createServiceRuntime(options: CreateRuntimeOptions): Services {
   return {
     settings,
     library,
+    import: importService,
     study,
     report,
     content,

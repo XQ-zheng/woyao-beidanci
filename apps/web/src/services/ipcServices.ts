@@ -84,6 +84,10 @@ export function createIpcServices(bridge: WoyaoBridge): Services {
     getFrequency: () => notWired('词频查询'),
   };
 
+  const importService = {
+    importWords: (input: unknown) => call(bridge, 'import.importWords', input),
+  };
+
   const study = {
     startSession: (input: unknown) => call(bridge, 'study.startSession', input),
     submitAnswer: (input: unknown) => call(bridge, 'study.submitAnswer', input),
@@ -139,6 +143,7 @@ export function createIpcServices(bridge: WoyaoBridge): Services {
   return {
     settings,
     library,
+    import: importService,
     study,
     report,
     content,

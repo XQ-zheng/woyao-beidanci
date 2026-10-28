@@ -148,7 +148,11 @@ if (!hasLock) {
       console.log(`[woyao] webRoot=${staticRoots.webRoot} icon=${existsSync(iconPath) ? 'ok' : 'missing'}`);
       serveAppProtocol(staticRoots.webRoot);
 
-      const router = createIpcRouter({ services: created.services, clock: created.context.clock });
+      const router = createIpcRouter({
+        services: created.services,
+        clock: created.context.clock,
+        getWindow: () => mainWindow,
+      });
       for (const channel of IPC_CHANNELS) {
         ipcMain.handle(channel, async (_event, payload: unknown) => {
           const result = await router(channel, payload);

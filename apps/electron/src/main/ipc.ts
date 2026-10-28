@@ -10,9 +10,12 @@
  *    不接受渲染进程自报时间——否则改系统时间就能把复习排期写乱。
  */
 import { z } from 'zod';
+import type { BrowserWindow } from 'electron';
 import type { Clock } from '@woyao/core';
+import type { OcrEnhancer } from '@woyao/importer';
 import { ServiceError, type Services } from '@woyao/services';
 
+import { extractTermsFromFile, pickImportFile } from './importer';
 import { IPC_CHANNELS, type IpcChannel } from '../shared/channels';
 
 /** 成功结果。 */
@@ -34,6 +37,10 @@ export type IpcResult = IpcOk | IpcErr;
 export interface IpcRouterOptions {
   readonly services: Services;
   readonly clock: Clock;
+  /** 取当前主窗口（文件对话框挂载用）。 */
+  readonly getWindow?: () => BrowserWindow | null;
+  /** 图片 OCR 的云端增强回调（可选；不传则纯本地 OCR）。 */
+  readonly ocrEnhancer?: OcrEnhancer;
 }
 
 /** 一条路由：入参 schema + 处理函数。 */
@@ -76,6 +83,8 @@ const reviewPlanSchema = z.object({
 export function createIpcRouter({
   services,
   clock,
+  getWindow,
+  ocrEnhancer,
 }: IpcRouterOptions): (channel: string, payload: unknown) => Promise<IpcResult> {
   const now = (): Date => clock.now();
 
@@ -160,6 +169,25 @@ export function createIpcRouter({
     'library.isInNotebook': {
       schema: z.object({ wordId: z.string().min(1) }),
       run: async (payload) => services.library.isInNotebook((payload as { wordId: string }).wordId),
+    },
+    'import.importWords': {
+      schema: z.object({
+        deckId: z.string().min(1),
+        terms: z.array(z.object({ lemma: z.string().min(1), phrase: z.boolean().optional() })).min(1),
+      }),
+      run: async (payload) =>
+        services.import.importWords(
+          payload as { deckId: string; terms: readonly { lemma: string; phrase?: boolean }[] },
+        ),
+    },
+    'import.pickFile': {
+      schema: z.undefined(),
+      run: async () => pickImportFile(getWindow?.() ?? null),
+    },
+    'import.extractFile': {
+      schema: z.object({ filePath: z.string().min(1) }),
+      run: async (payload) =>
+        extractTermsFromFile((payload as { filePath: string }).filePath, ocrEnhancer),
     },
     'settings.getSnapshot': {
       schema: z.undefined(),

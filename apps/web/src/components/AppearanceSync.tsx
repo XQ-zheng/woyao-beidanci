@@ -1,12 +1,11 @@
 import { useEffect } from 'react';
 
-import { applyFontFamily, applyWallpaper } from '../lib/appearance';
+import { applyFontFamily } from '../lib/appearance';
 import { useServices } from '../services/ServiceProvider';
 
 /**
  * 启动时把已保存的壁纸与字体应用到根元素。
  *
- * 壁纸：`SettingsSnapshot.wallpaper` 存的是 `file://` 绝对路径或空串；
  * 字体：`fontFamily` 为内置 key 或导入字体的 FontFace family。
  *
  * 与 FontScaleSync 同理，挂在应用外壳上，保证任何页面都生效，而不是只在设置页。
@@ -28,7 +27,6 @@ export function AppearanceSync(): null {
         if (!active) {
           return;
         }
-        applyWallpaper(snapshot.wallpaper);
         applyFontFamily(snapshot.fontFamily);
       })
       .catch(() => {

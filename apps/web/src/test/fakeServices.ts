@@ -223,6 +223,7 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
     renameDeck: vi.fn(async () => notUsed('library.renameDeck')),
     deleteDeck: vi.fn(async () => notUsed('library.deleteDeck')),
     listDeckWords: vi.fn(async () => []),
+    importWordbook: vi.fn(async () => ({ deckId: 'deck-1', imported: 0, reusedDeck: false })),
     addWordToNotebook: vi.fn(async () => undefined),
     removeWordFromNotebook: vi.fn(async () => undefined),
     isInNotebook: vi.fn(async () => false),

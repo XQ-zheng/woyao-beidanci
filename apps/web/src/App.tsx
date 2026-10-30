@@ -16,6 +16,7 @@ import { APP_NAME } from './bootstrap';
 import { AppNavigation } from './components/AppNavigation';
 import { AppearanceSync } from './components/AppearanceSync';
 import { FontScaleSync } from './components/FontScaleSync';
+import { WallpaperLayer } from './components/WallpaperLayer';
 import { AppRoutes } from './router';
 import { ServiceProvider } from './services/ServiceProvider';
 import { appTheme } from './theme';
@@ -37,6 +38,9 @@ function AppShell(): ReactElement {
   if (immersive) {
     return (
       <div className="flex min-h-screen flex-col">
+        <FontScaleSync />
+        <AppearanceSync />
+        <WallpaperLayer />
         <Button
           aria-label="查看导航"
           onClick={() => setNavOpen(true)}
@@ -95,6 +99,7 @@ export function App({ services }: AppProps): ReactElement {
       <ServiceProvider services={services ?? null}>
         <FontScaleSync />
         <AppearanceSync />
+        <WallpaperLayer />
         <BrowserRouter>
           <AppShell />
         </BrowserRouter>

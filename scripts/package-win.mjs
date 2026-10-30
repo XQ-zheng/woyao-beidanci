@@ -623,6 +623,16 @@ function assembleApp(closure) {
     path.join(tessdataDir, 'eng.traineddata.gz'),
   );
 
+  // 7.5) 内置常用词库（四六级/考研）：主进程 library.listWordbooks / importWordbook 读它。
+  const wordbooksDir = path.join(stagingDir, 'resources', 'wordbooks');
+  mkdirSync(wordbooksDir, { recursive: true });
+  for (const file of readdirSync(path.join(repoRoot, 'packages', 'importer', 'assets', 'wordbooks'))) {
+    copyFileSync(
+      path.join(repoRoot, 'packages', 'importer', 'assets', 'wordbooks', file),
+      path.join(wordbooksDir, file),
+    );
+  }
+
   // 8) 数据位置引导文件：主进程启动最早读它，把 userData 重定向过去。
   //    默认 = 软件根目录（E:\我要背单词——相关文件夹）；用户在设置里改过则由
   //    changeDataLocation 重写这个文件。

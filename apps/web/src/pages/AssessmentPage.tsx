@@ -11,6 +11,7 @@ import { useRef, useState } from 'react';
 import { useServiceData } from '../hooks/useServiceData';
 import { assessmentLevelLabel, formatLocalDateTime } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
+import { VocabQuickTest } from '../components/VocabQuickTest';
 import { PageShell } from './PageShell';
 
 /** AssessmentPage 入参（`now` 可注入，测试用固定时钟）。 */
@@ -128,6 +129,7 @@ export default function AssessmentPage({ now = (): Date => new Date() }: Assessm
             </Box>
           </>
         )}
+        <VocabQuickTest />
       </Box>
     </PageShell>
   );

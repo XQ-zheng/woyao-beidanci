@@ -1,4 +1,5 @@
 import Alert from '@mui/material/Alert';
+import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -23,7 +24,7 @@ import type { TrainingMode } from '@woyao/core';
 
 import { useServiceData } from '../hooks/useServiceData';
 import DataLocationSection from '../components/DataLocationSection';
-import { applyFontFamily, applyWallpaper } from '../lib/appearance';
+import { FONT_OPTIONS, applyFontFamily } from '../lib/appearance';
 import { applyFontScale } from '../lib/fontScale';
 import { questionStyleLabel, rotationOrderLabel, trainingModeLabel } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
@@ -38,13 +39,6 @@ const INTERVAL_MAX = 365;
 const INTERVAL_COUNT_MAX = 12;
 
 /** 内置字体选项（value 是 key；自定义导入字体用 fontFamily 存 @font-face 名）。 */
-const FONT_OPTIONS: ReadonlyArray<{ readonly value: string; readonly label: string }> = [
-  { value: 'system', label: '系统默认（微软雅黑 / 苹方）' },
-  { value: 'serif', label: '思源宋体 / 衬线（Songti / Noto Serif SC）' },
-  { value: 'mono', label: '等宽（Consolas / Menlo）' },
-  { value: 'rounded', label: '圆润字体（PingFang / Varela Round）' },
-];
-
 /** 把异常压成可展示的一句话。 */
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -153,15 +147,15 @@ export default function SettingsPage(): ReactElement {
   const activeServices = services;
 
   /** 局部更新草稿。 */
-  /** 调桌面端「选文件」通道并解包 {ok,data}（preload 的 invoke 不负责解包）。 */
-  async function invokePickFile(channel: string): Promise<string | null> {
+  /** 调桌面端通道并解包 {ok,data}（preload 的 invoke 不负责解包）。 */
+  async function invokePickFile<T = string | null>(channel: string): Promise<T | null> {
     const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } })
       .woyao;
     if (bridge === undefined) {
       throw new Error('仅桌面端可用');
     }
     const raw = (await bridge.invoke(channel)) as
-      | { ok: true; data: string | null }
+      | { ok: true; data: T }
       | { ok: false; error: { message: string } };
     if (!raw.ok) {
       throw new Error(raw.error.message);
@@ -169,16 +163,26 @@ export default function SettingsPage(): ReactElement {
     return raw.data ?? null;
   }
 
-  /** 选壁纸：文件对话框 → 存 file:// 路径 → 立即应用。 */
+  /**
+   * 选壁纸：文件对话框 → 主进程读成 dataURL（`file://` 会被 app:// 安全策略拦掉）
+   * → 存本地路径进设置 → 广播给 WallpaperLayer 立即显示（无需重启/保存）。
+   */
   async function pickWallpaper(): Promise<void> {
     try {
-      const path = await invokePickFile('settings.pickWallpaper');
-      if (path === null || path === '') {
+      const picked = await invokePickFile<{ path: string; dataUrl: string | null }>(
+        'settings.pickWallpaper',
+      );
+      if (picked === null || picked === undefined) {
         return;
       }
-      const url = `file://${path.replace(/\\/gu, '/')}`;
-      update('wallpaper', url);
-      applyWallpaper(url);
+      if (picked.dataUrl === null) {
+        setMessage('壁纸读取失败：图片可能超过 12MB 或格式不支持。');
+        return;
+      }
+      update('wallpaper', picked.path);
+      window.dispatchEvent(
+        new CustomEvent<string>('woyao:wallpaper', { detail: picked.dataUrl }),
+      );
       setMessage('壁纸已生效（点「保存」后重启仍保留）。');
     } catch (cause: unknown) {
       setMessage(`选择壁纸失败：${describeError(cause)}`);
@@ -416,7 +420,15 @@ export default function SettingsPage(): ReactElement {
                 选择壁纸图片…
               </Button>
               {draft.wallpaper !== '' ? (
-                <Button variant="outlined" size="small" color="error" onClick={() => update('wallpaper', '')}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  color="error"
+                  onClick={() => {
+                    update('wallpaper', '');
+                    window.dispatchEvent(new CustomEvent<string>('woyao:wallpaper', { detail: '' }));
+                  }}
+                >
                   移除壁纸
                 </Button>
               ) : null}
@@ -426,23 +438,37 @@ export default function SettingsPage(): ReactElement {
             <Typography variant="body2" color="text.secondary">
               字体
             </Typography>
-            <TextField
-              select
+            <Autocomplete
               size="small"
-              label="界面字体"
-              value={draft.fontFamily}
-              onChange={(event) => {
-                update('fontFamily', event.target.value);
-                applyFontFamily(event.target.value);
+              options={FONT_OPTIONS}
+              // 支持按字体名、中文名、英文字体族名的任意片段搜索（含单个汉字）
+              filterOptions={(options, state) => {
+                const q = state.inputValue.trim().toLowerCase();
+                if (q === '') {
+                  return options;
+                }
+                return options.filter((option) =>
+                  (option.label + ' ' + option.keywords + ' ' + option.value)
+                    .toLowerCase()
+                    .includes(q),
+                );
               }}
+              getOptionLabel={(option) => option.label}
+              value={FONT_OPTIONS.find((option) => option.value === draft.fontFamily) ?? null}
+              onChange={(_, option) => {
+                if (option === null) {
+                  return;
+                }
+                update('fontFamily', option.value);
+                applyFontFamily(option.value);
+              }}
+              isOptionEqualToValue={(a, b) => a.value === b.value}
+              renderInput={(params) => (
+                <TextField {...params} label="界面字体（可输入搜索）" placeholder="输入字体名，如 雅黑 / 宋 / kai" />
+              )}
               sx={{ maxWidth: 320 }}
-            >
-              {FONT_OPTIONS.map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </TextField>
+              noOptionsText="没有匹配的字体"
+            />
             <Button variant="outlined" size="small" onClick={() => void pickFont()}>
               导入字体文件（.ttf / .otf）…
             </Button>

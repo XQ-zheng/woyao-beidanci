@@ -9,6 +9,7 @@ import List from '@mui/material/List';
 import ListItem from '@mui/material/ListItem';
 import ListItemText from '@mui/material/ListItemText';
 import Tab from '@mui/material/Tab';
+import Chip from '@mui/material/Chip';
 import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
@@ -45,13 +46,21 @@ interface ImportWordsDialogProps {
 }
 
 /** 导入方式页签。 */
-type ImportMode = 'text' | 'file';
+type ImportMode = 'text' | 'file' | 'builtin';
 
 /**
  * 导入单词弹窗：手动输入英文单词/短语，或选择图片/文档自动识别。
  *
  * 流程：选择方式 → 得到待导入条目 → 预览 → 确认导入 → 显示报告。
  */
+/** 内置常用词库的索引项（主进程读 resources/wordbooks/index.json）。 */
+interface WordbookSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly wordCount: number;
+}
+
 export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactElement {
   const { open, deckId, deckName, onClose, onImported } = props;
   const services = useServices();
@@ -64,6 +73,11 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportWordsResult | null>(null);
+  /** 内置常用词库索引（切到「常用词库」页签时加载）。 */
+  const [wordbooks, setWordbooks] = useState<readonly WordbookSummary[]>([]);
+  const [presetId, setPresetId] = useState<string | null>(null);
+  /** 常用词库导入结果（新建词库名 + 词数）。 */
+  const [builtinResult, setBuiltinResult] = useState<string | null>(null);
 
   /** 拿 preload 桥（桌面端才有；浏览器模式返回 null）。 */
   function bridge(): Bridge | null {
@@ -94,6 +108,61 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
       out.push({ lemma, phrase: words.length > 1 });
     }
     return out;
+  }
+
+  /** 切到「常用词库」页签时拉索引（只拉一次）。 */
+  async function loadWordbooks(): Promise<void> {
+    if (wordbooks.length > 0) {
+      return;
+    }
+    const b = bridge();
+    if (b === null) {
+      setError('常用词库导入仅在桌面端可用。');
+      return;
+    }
+    try {
+      const raw = (await b.invoke('library.listWordbooks')) as
+        | { ok: true; data: readonly WordbookSummary[] }
+        | { ok: false; error: { message: string } };
+      if (!raw.ok) {
+        throw new Error(raw.error.message);
+      }
+      setWordbooks(raw.data);
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  /** 导入选中的内置词库：会新建一个与词库同名的词库并挂好全部单词与释义。 */
+  async function importBuiltin(): Promise<void> {
+    const b = bridge();
+    if (b === null || presetId === null) {
+      return;
+    }
+    setImporting(true);
+    setError(null);
+    setBuiltinResult(null);
+    try {
+      const raw = (await b.invoke('library.importWordbook', { presetId })) as
+        | { ok: true; data: { deckId: string; imported: number; reusedDeck: boolean } }
+        | { ok: false; error: { message: string } };
+      if (!raw.ok) {
+        throw new Error(raw.error.message);
+      }
+      const summary = wordbooks.find((item) => item.id === presetId);
+      setBuiltinResult(
+        (raw.data.reusedDeck ? '词库已存在，已补齐缺失单词：' : '已新建词库：') +
+          (summary?.name ?? presetId) +
+          '（新增 ' +
+          String(raw.data.imported) +
+          ' 词）',
+      );
+      onImported();
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function handleTextParse(): Promise<void> {
@@ -183,15 +252,19 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
         <Tabs
           value={mode}
           onChange={(_, value: string) => {
-            if (value === 'text' || value === 'file') {
+            if (value === 'text' || value === 'file' || value === 'builtin') {
               setMode(value);
               setError(null);
+              if (value === 'builtin') {
+                void loadWordbooks();
+              }
             }
           }}
           aria-label="导入方式"
         >
           <Tab value="text" label="手动输入" />
           <Tab value="file" label="图片 / 文档" />
+          <Tab value="builtin" label="导入常用词库" />
         </Tabs>
 
         {mode === 'text' ? (
@@ -209,6 +282,51 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
               <Button variant="outlined" onClick={() => void handleTextParse()}>
                 解析并预览
               </Button>
+            </Box>
+          </Box>
+        ) : mode === 'builtin' ? (
+          <Box sx={{ display: 'grid', gap: 1.5 }}>
+            <Typography variant="body2" color="text.secondary">
+              选择一个内置词库，应用会新建一个同名词库，并把里面的全部单词与常用释义一起导入（含音标）。
+            </Typography>
+            <Box sx={{ display: 'grid', gap: 1 }}>
+              {wordbooks.map((book) => (
+                <Box
+                  key={book.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setPresetId(book.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      setPresetId(book.id);
+                    }
+                  }}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    p: 1.25,
+                    border: '1px solid',
+                    borderColor: presetId === book.id ? 'primary.main' : 'divider',
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    bgcolor: presetId === book.id ? 'action.selected' : 'transparent',
+                  }}
+                >
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="body1">{book.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {book.description}
+                    </Typography>
+                  </Box>
+                  <Chip size="small" label={`${String(book.wordCount)} 词`} />
+                </Box>
+              ))}
+              {wordbooks.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  没有找到内置词库（可能安装包缺少 resources/wordbooks）。
+                </Typography>
+              ) : null}
             </Box>
           </Box>
         ) : (
@@ -250,6 +368,8 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
           </Box>
         ) : null}
 
+        {builtinResult !== null ? <Alert severity="success">{builtinResult}</Alert> : null}
+
         {result !== null ? (
           <Alert severity={result.skipped.length > 0 ? 'warning' : 'success'}>
             <Typography variant="body2">
@@ -269,13 +389,23 @@ export default function ImportWordsDialog(props: ImportWordsDialogProps): ReactE
         <Button onClick={handleClose} disabled={importing}>
           关闭
         </Button>
-        <Button
-          variant="contained"
-          onClick={() => void handleImport()}
-          disabled={terms.length === 0 || importing || services === null}
-        >
-          {importing ? '正在导入…' : `导入 ${terms.length > 0 ? `${terms.length} 个词` : ''}`}
-        </Button>
+        {mode === 'builtin' ? (
+          <Button
+            variant="contained"
+            onClick={() => void importBuiltin()}
+            disabled={presetId === null || importing}
+          >
+            {importing ? '正在导入（词库较大，请稍候）…' : '导入所选词库'}
+          </Button>
+        ) : (
+          <Button
+            variant="contained"
+            onClick={() => void handleImport()}
+            disabled={terms.length === 0 || importing || services === null}
+          >
+            {importing ? '正在导入…' : `导入 ${terms.length > 0 ? `${terms.length} 个词` : ''}`}
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

@@ -8,7 +8,7 @@
  *
  * 渲染进程只拿到「去重后的英文单词/短语列表」，再走 `import.importWords` 落库。
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { dialog, type BrowserWindow } from 'electron';
@@ -77,6 +77,42 @@ export async function pickFontFile(window: BrowserWindow | null): Promise<string
     return null;
   }
   return result.filePaths[0] ?? null;
+}
+
+/** 壁纸图片体积上限（dataURL 会进 IPC 与渲染层，太大拖慢启动）。 */
+const WALLPAPER_MAX_BYTES = 12 * 1024 * 1024;
+
+/**
+ * 读取图片文件为 dataURL（壁纸用）。
+ *
+ * 为什么必须转 dataURL：渲染层页面走 `app://` 协议，直接
+ * `background-image: url("file:///…")` 会被安全策略拦掉（图片加载失败、背景一片白）
+ * ——这正是「选完壁纸不显示」的根因。
+ *
+ * @param filePath 本地图片绝对路径。
+ * @returns dataURL；文件不存在或超过上限时返回 null。
+ */
+export function readImageAsDataUrl(filePath: string): string | null {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size > WALLPAPER_MAX_BYTES) {
+      return null;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const mime =
+      ext === '.jpg' || ext === '.jpeg'
+        ? 'image/jpeg'
+        : ext === '.webp'
+          ? 'image/webp'
+          : ext === '.gif'
+            ? 'image/gif'
+            : ext === '.bmp'
+              ? 'image/bmp'
+              : 'image/png';
+    return 'data:' + mime + ';base64,' + readFileSync(filePath).toString('base64');
+  } catch {
+    return null;
+  }
 }
 
 /** 弹出图片选择对话框（壁纸用）；取消返回 null。 */

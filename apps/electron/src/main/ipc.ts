@@ -10,6 +10,7 @@
  *    不接受渲染进程自报时间——否则改系统时间就能把复习排期写乱。
  */
 import { z } from 'zod';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { app, dialog, type BrowserWindow } from 'electron';
 import type { Clock } from '@woyao/core';
@@ -21,7 +22,7 @@ import {
   migrateDataFiles,
   writeLocationHint,
 } from './dataLocation';
-import { extractTermsFromFile, pickFontFile, pickImageFile, pickImportFile } from './importer';
+import { extractTermsFromFile, pickFontFile, pickImageFile, pickImportFile, readImageAsDataUrl } from './importer';
 import { IPC_CHANNELS, type IpcChannel } from '../shared/channels';
 
 /** 成功结果。 */
@@ -238,6 +239,80 @@ export function createIpcRouter({
           },
         ),
     },
+    'assessment.sampleWords': {
+      schema: z.object({ count: z.number().int().min(5).max(200) }),
+      run: async (payload) => {
+        const input = payload as { count: number };
+        // 词汇量自测：从内置四六级/考研词库的并集里随机抽词（只给词形，不给释义，
+        // 避免提示答案）。词库缺失时返回空数组，由 UI 提示「未内置词库」。
+        const dir = path.join(process.resourcesPath, 'wordbooks');
+        const pool = new Map<string, { lemma: string; meaning: string }>();
+        for (const id of ['cet4', 'cet6', 'kaoyan']) {
+          try {
+            const raw = JSON.parse(readFileSync(path.join(dir, id + '.json'), 'utf8')) as {
+              words: ReadonlyArray<{
+                lemma: string;
+                senses: ReadonlyArray<{ pos: string; simpleZh: string }>;
+              }>;
+            };
+            for (const word of raw.words) {
+              const key = word.lemma.toLowerCase();
+              if (!pool.has(key)) {
+                const first = word.senses[0];
+                pool.set(key, {
+                  lemma: word.lemma,
+                  meaning: first === undefined ? '' : (first.pos === '' ? '' : first.pos + '. ') + first.simpleZh,
+                });
+              }
+            }
+          } catch {
+            // 单个词库缺失不影响其它词库抽样
+          }
+        }
+        const entries = [...pool.values()];
+        // Fisher-Yates 洗牌后取前 count 个（真随机即可：自测不要求可复现）
+        for (let i = entries.length - 1; i > 0; i -= 1) {
+          const j = Math.floor(Math.random() * (i + 1));
+          const tmp = entries[i]!;
+          entries[i] = entries[j]!;
+          entries[j] = tmp;
+        }
+        return entries.slice(0, Math.min(input.count, entries.length));
+      },
+    },
+    'library.listWordbooks': {
+      schema: z.undefined(),
+      run: async () => {
+        // 内置词库索引：resources/wordbooks/index.json（打包时由 package-win 复制）。
+        const file = path.join(process.resourcesPath, 'wordbooks', 'index.json');
+        try {
+          return JSON.parse(readFileSync(file, 'utf8')) as unknown;
+        } catch {
+          return [];
+        }
+      },
+    },
+    'library.importWordbook': {
+      schema: z.object({ presetId: z.string().min(1) }),
+      run: async (payload) => {
+        const input = payload as { presetId: string };
+        const file = path.join(
+          process.resourcesPath,
+          'wordbooks',
+          input.presetId.replace(/[^a-z0-9-]/giu, '') + '.json',
+        );
+        const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+          name: string;
+          words: ReadonlyArray<{
+            lemma: string;
+            phoneticUk?: string;
+            phoneticUs?: string;
+            senses: ReadonlyArray<{ pos: string; simpleZh: string }>;
+          }>;
+        };
+        return services.library.importWordbook({ name: raw.name, words: raw.words });
+      },
+    },
     'library.collectWord': {
       schema: z.object({ lemma: z.string().trim().min(1) }),
       run: async (payload) => services.library.collectWord(payload as { lemma: string }),
@@ -288,7 +363,21 @@ export function createIpcRouter({
     },
     'settings.pickWallpaper': {
       schema: z.undefined(),
-      run: async () => pickImageFile(getWindow?.() ?? null),
+      run: async () => {
+        const filePath = await pickImageFile(getWindow?.() ?? null);
+        if (filePath === null) {
+          return null;
+        }
+        // 同时返回路径（存设置）与 dataURL（渲染层立刻显示，避开 file:// 拦截）。
+        return { path: filePath, dataUrl: readImageAsDataUrl(filePath) };
+      },
+    },
+    'settings.readWallpaper': {
+      schema: z.object({ path: z.string().min(1) }),
+      run: async (payload) => {
+        const input = payload as { path: string };
+        return readImageAsDataUrl(input.path);
+      },
     },
     'settings.pickFont': {
       schema: z.undefined(),

@@ -441,6 +441,28 @@ export const createWordInputSchema = z.strictObject({
   corpusVersion: z.string().min(1, '语料版本不能为空').optional(),
 });
 
+/** 内置词库导入：一个词条（词形 + 音标 + 常用释义）。 */
+export const wordbookEntrySchema = z.strictObject({
+  lemma: z.string().trim().min(1, '词形不能为空').max(80),
+  phoneticUk: z.string().max(64).optional(),
+  phoneticUs: z.string().max(64).optional(),
+  senses: z
+    .array(
+      z.strictObject({
+        pos: z.string().max(24).default(''),
+        simpleZh: z.string().trim().min(1, '释义不能为空').max(200),
+      }),
+    )
+    .min(1, '至少需要一个义项')
+    .max(8),
+});
+
+/** 内置词库导入入参（词库名 + 全部词条；同名重复导入是幂等的）。 */
+export const importWordbookInputSchema = z.strictObject({
+  name: z.string().trim().min(1, '词库名不能为空').max(60),
+  words: z.array(wordbookEntrySchema).min(1).max(8000),
+});
+
 /** 自我认识判断。 */
 export const recognitionSchema = z.enum(['KNOWN', 'UNKNOWN']);
 

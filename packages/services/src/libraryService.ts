@@ -31,6 +31,7 @@ import {
   replaceWordSensesInputSchema,
   collectWordInputSchema,
   setWordDistractorsInputSchema,
+  importWordbookInputSchema,
   updateWordSenseInputSchema,
   type CreateWordInput,
   type CreatedWordView,
@@ -69,6 +70,24 @@ export interface LibraryService {
   }): Promise<DeckWordView[]>;
   /** 收藏到生词本（幂等）。 */
   addWordToNotebook(wordId: string): Promise<void>;
+  /**
+   * 导入一份内置词库（四六级/考研等）。
+   *
+   * 幂等：同名 CUSTOM 词库已存在时复用，不重复建库；词条按 lemma 复用已有词
+   * （用户此前手动加过的词不会被重复创建），再挂到该词库。
+   *
+   * @param input 词库名 + 词条数组（含音标与常用释义）。
+   * @returns 词库 id、实际新挂载的词数与是否复用了既有词库。
+   */
+  importWordbook(input: {
+    name: string;
+    words: ReadonlyArray<{
+      lemma: string;
+      phoneticUk?: string;
+      phoneticUs?: string;
+      senses: ReadonlyArray<{ pos: string; simpleZh: string }>;
+    }>;
+  }): Promise<{ deckId: string; imported: number; reusedDeck: boolean }>;
   /** 从生词本移除（幂等）。 */
   removeWordFromNotebook(wordId: string): Promise<void>;
   /** 是否在生词本里。 */
@@ -401,6 +420,65 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       }));
     },
 
+    async importWordbook(input: {
+      name: string;
+      words: ReadonlyArray<{
+        lemma: string;
+        phoneticUk?: string;
+        phoneticUs?: string;
+        senses: ReadonlyArray<{ pos: string; simpleZh: string }>;
+      }>;
+    }): Promise<{ deckId: string; imported: number; reusedDeck: boolean }> {
+      const validated = parseOrThrow(importWordbookInputSchema, input, '导入常用词库');
+      const now = context.clock.now();
+      const device = context.device.deviceId();
+      // 幂等：同名 CUSTOM 词库已存在时复用，不重复建库（用户重复点导入不会产生第二个同名库）。
+      const existingDecks = await context.repos.words.listDecks(ownerScope);
+      const sameName = existingDecks.find((deck) => deck.name === validated.name && deck.kind === 'CUSTOM');
+      const deck =
+        sameName ??
+        (await context.repos.words.upsertDeck({
+          ownerScope,
+          name: validated.name,
+          kind: 'CUSTOM',
+          deviceId: device,
+          now,
+        }));
+      const deckWordIds = new Set(await context.repos.words.listDeckWordIds(deck.id));
+      const sourceId = LOCAL_USER_SOURCE_ID;
+      await ensureUserSource(sourceId);
+      let imported = 0;
+      for (const entry of validated.words) {
+        // 复用已有词：用户此前手动加过的词不重复创建（避免唯一约束冲突）
+        let wordId = (await context.repos.words.getWordByLemma(entry.lemma, ownerScope))?.id;
+        if (wordId === undefined) {
+          const created = await context.repos.words.createWord({
+            ownerScope,
+            lemma: entry.lemma,
+            phoneticUk: entry.phoneticUk ?? null,
+            phoneticUs: entry.phoneticUs ?? null,
+            senses: entry.senses.map((sense, index) => ({
+              senseNo: index + 1,
+              pos: sense.pos,
+              simpleZh: sense.simpleZh,
+              detailedZh: null,
+              contextText: null,
+              sourceId,
+            })),
+            deviceId: device,
+            now,
+          });
+          wordId = created.id;
+        }
+        if (deckWordIds.has(wordId)) {
+          continue;
+        }
+        await context.repos.words.addDeckWord(deck.id, wordId, device, now);
+        deckWordIds.add(wordId);
+        imported += 1;
+      }
+      return { deckId: deck.id, imported, reusedDeck: sameName !== undefined };
+    },
     async addWordToNotebook(wordId: string): Promise<void> {
       await requireWord(wordId);
       const notebook = await findNotebookDeck(true);

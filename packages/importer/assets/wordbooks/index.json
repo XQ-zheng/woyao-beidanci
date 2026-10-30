@@ -1,0 +1,26 @@
+[
+  {
+    "id": "cet4",
+    "name": "大学英语四级单词",
+    "description": "四级核心词汇（含音标与常用释义）",
+    "wordCount": 2607
+  },
+  {
+    "id": "cet6",
+    "name": "大学英语六级单词",
+    "description": "六级核心词汇（含音标与常用释义）",
+    "wordCount": 2345
+  },
+  {
+    "id": "kaoyan",
+    "name": "考研英语词汇",
+    "description": "考研英语大纲词汇（含音标与常用释义）",
+    "wordCount": 3728
+  },
+  {
+    "id": "kaoyan-highfreq",
+    "name": "近10年考研真题高频词汇",
+    "description": "考研真题高频词（按词频顺序取前 1200 词）",
+    "wordCount": 1200
+  }
+]

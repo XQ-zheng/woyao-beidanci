@@ -70,8 +70,12 @@ export interface SettingsSnapshot {
   accent: 'uk' | 'us';
   volume: number;
   fontScale: number;
+  /** 界面字体（内置字体 key 或自定义字体名）。 */
+  fontFamily: string;
   autoStart: boolean;
   minimizeToTray: boolean;
+  /** 壁纸（本地图片的 file:// 或 dataURL）；空串 = 无壁纸。 */
+  wallpaper: string;
 }
 
 /**
@@ -360,6 +364,8 @@ export const settingsPatchSchema = z.strictObject({
   trainingMode: trainingModeSchema.optional(),
   questionStyle: questionStyleSchema.optional(),
   rotationOrder: rotationOrderSchema.optional(),
+  wallpaper: z.string().max(2_000_000, '壁纸数据过长').optional(),
+  fontFamily: z.string().max(200).optional(),
   accent: accentSchema.optional(),
   volume: z
     .number()

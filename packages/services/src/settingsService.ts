@@ -66,6 +66,8 @@ const SETTING_KEYS = {
   fontScale: 'ui.fontScale',
   autoStart: 'app.autoStart',
   minimizeToTray: 'app.minimizeToTray',
+  wallpaper: 'ui.wallpaper',
+  fontFamily: 'ui.fontFamily',
 } as const satisfies Record<keyof SettingsSnapshot, string>;
 
 /** 设置服务契约。 */
@@ -213,6 +215,8 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
       // 需求明确要求这两项默认**不勾选**：开机自启与最小化到托盘都属于“用户主动开启”的能力。
       autoStart: readStored(stored, SETTING_KEYS.autoStart, storedBooleanSchema, false),
       minimizeToTray: readStored(stored, SETTING_KEYS.minimizeToTray, storedBooleanSchema, false),
+      wallpaper: readStored(stored, SETTING_KEYS.wallpaper, storedStringSchema, ''),
+      fontFamily: readStored(stored, SETTING_KEYS.fontFamily, storedStringSchema, 'system'),
     };
   }
 
@@ -249,6 +253,8 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
         fontScale: validated.fontScale ?? current.fontScale,
         autoStart: validated.autoStart ?? current.autoStart,
         minimizeToTray: validated.minimizeToTray ?? current.minimizeToTray,
+        wallpaper: validated.wallpaper ?? current.wallpaper,
+        fontFamily: validated.fontFamily ?? current.fontFamily,
       };
 
       const planCheck = validateReviewPlan({
@@ -290,6 +296,16 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
       if (validated.rotationOrder !== undefined) {
         writes.push(
           context.repos.settings.set(SETTING_KEYS.rotationOrder, JSON.stringify(next.rotationOrder), deviceId, now),
+        );
+      }
+      if (validated.wallpaper !== undefined) {
+        writes.push(
+          context.repos.settings.set(SETTING_KEYS.wallpaper, JSON.stringify(next.wallpaper), deviceId, now),
+        );
+      }
+      if (validated.fontFamily !== undefined) {
+        writes.push(
+          context.repos.settings.set(SETTING_KEYS.fontFamily, JSON.stringify(next.fontFamily), deviceId, now),
         );
       }
       if (validated.accent !== undefined) {

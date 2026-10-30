@@ -66,6 +66,21 @@ export async function pickImportFile(window: BrowserWindow | null): Promise<stri
   return result.filePaths[0] ?? null;
 }
 
+/** 弹出图片选择对话框（壁纸用）；取消返回 null。 */
+export async function pickImageFile(window: BrowserWindow | null): Promise<string | null> {
+  const result = await dialog.showOpenDialog(window ?? (undefined as never), {
+    title: '选择壁纸图片',
+    properties: ['openFile'],
+    filters: [
+      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
+    ],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0] ?? null;
+}
+
 /**
  * 定位 OCR 语言包目录（含 `eng.traineddata`）。
  *

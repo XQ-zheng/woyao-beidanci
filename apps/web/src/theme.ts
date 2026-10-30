@@ -40,15 +40,7 @@ export const appTheme = createTheme({
     borderRadius: 8,
   },
   typography: {
-    fontFamily: [
-      '-apple-system',
-      'BlinkMacSystemFont',
-      '"Segoe UI"',
-      '"PingFang SC"',
-      '"Microsoft YaHei"',
-      '"Noto Sans SC"',
-      'sans-serif',
-    ].join(','),
+    fontFamily: 'var(--woyao-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif)',
     h1: { fontWeight: 700 },
     h2: { fontWeight: 700 },
     h3: { fontWeight: 700 },

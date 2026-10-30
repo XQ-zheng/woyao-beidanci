@@ -14,6 +14,7 @@ import type { Services } from '@woyao/services';
 
 import { APP_NAME } from './bootstrap';
 import { AppNavigation } from './components/AppNavigation';
+import { AppearanceSync } from './components/AppearanceSync';
 import { FontScaleSync } from './components/FontScaleSync';
 import { AppRoutes } from './router';
 import { ServiceProvider } from './services/ServiceProvider';
@@ -93,6 +94,7 @@ export function App({ services }: AppProps): ReactElement {
       <CssBaseline />
       <ServiceProvider services={services ?? null}>
         <FontScaleSync />
+        <AppearanceSync />
         <BrowserRouter>
           <AppShell />
         </BrowserRouter>

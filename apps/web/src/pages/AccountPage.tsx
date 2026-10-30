@@ -289,7 +289,7 @@ export default function AccountPage(): ReactElement {
       return;
     }
     if (intent === 'signUp' && challenge.isExistingUser) {
-      setAuthError('该手机号已经注册过了，请直接点「登录」。');
+      setAuthError('此账号已经成功注册，请点击登录。');
       return;
     }
     setVerifying(true);
@@ -398,7 +398,7 @@ export default function AccountPage(): ReactElement {
               aria-label="登录方式"
             >
               <Tab value="phone" label="手机验证码" />
-              <Tab value="email" label="邮箱验证码（辅助）" />
+              <Tab value="email" label="邮箱验证码" />
             </Tabs>
 
             {channel === 'phone' ? (
@@ -467,7 +467,7 @@ export default function AccountPage(): ReactElement {
                   setAuthHint(null);
                 }}
                 autoComplete="email"
-                helperText="用于辅助登录，可选"
+                helperText="与手机号同等的主要登录方式"
                 sx={{ maxWidth: 360 }}
               />
             )}

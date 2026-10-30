@@ -36,6 +36,14 @@ const INTERVAL_MIN = 1;
 const INTERVAL_MAX = 365;
 const INTERVAL_COUNT_MAX = 12;
 
+/** 内置字体选项（value 是 key；自定义导入字体用 fontFamily 存 @font-face 名）。 */
+const FONT_OPTIONS: ReadonlyArray<{ readonly value: string; readonly label: string }> = [
+  { value: 'system', label: '系统默认（微软雅黑 / 苹方）' },
+  { value: 'serif', label: '思源宋体 / 衬线（Songti / Noto Serif SC）' },
+  { value: 'mono', label: '等宽（Consolas / Menlo）' },
+  { value: 'rounded', label: '圆润字体（PingFang / Varela Round）' },
+];
+
 /** 把异常压成可展示的一句话。 */
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -144,6 +152,47 @@ export default function SettingsPage(): ReactElement {
   const activeServices = services;
 
   /** 局部更新草稿。 */
+  /** 选壁纸：走桌面端文件对话框，读回绝对路径（web 预览无 bridge 时静默忽略）。 */
+  async function pickWallpaper(): Promise<void> {
+    const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } }).woyao;
+    if (bridge === undefined) {
+      setMessage('壁纸选择仅在桌面端可用。');
+      return;
+    }
+    try {
+      const path = (await bridge.invoke('settings.pickWallpaper')) as string | null;
+      if (path !== null && path !== '') {
+        update('wallpaper', `file://${path.replace(/\\/gu, '/')}`);
+        setMessage('壁纸已更新，点「保存」生效。');
+      }
+    } catch (cause: unknown) {
+      setMessage(`选择壁纸失败：${describeError(cause)}`);
+    }
+  }
+
+  /** 导入字体：读本地 .ttf/.otf，注册 @font-face 并设为界面字体。 */
+  async function pickFont(): Promise<void> {
+    const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } }).woyao;
+    if (bridge === undefined) {
+      setMessage('字体导入仅在桌面端可用。');
+      return;
+    }
+    try {
+      const path = (await bridge.invoke('settings.pickWallpaper')) as string | null;
+      if (path === null || path === '') {
+        return;
+      }
+      const name = `custom-${Date.now().toString(36)}`;
+      const face = new FontFace(name, `url('file://${path.replace(/\\/gu, '/')}')`);
+      await face.load();
+      document.fonts.add(face);
+      update('fontFamily', name);
+      setMessage('字体已导入，点「保存」后全局生效。');
+    } catch (cause: unknown) {
+      setMessage(`导入字体失败：${describeError(cause)}`);
+    }
+  }
+
   function update<K extends keyof SettingsSnapshot>(key: K, value: SettingsSnapshot[K]): void {
     setDraft((current) => (current === null ? current : { ...current, [key]: value }));
     setMessage(null);
@@ -346,6 +395,43 @@ export default function SettingsPage(): ReactElement {
               onChange={(_, value) => update('volume', typeof value === 'number' ? value : value[0])}
               aria-label="音量"
             />
+          </Box>
+          <Box sx={{ display: 'grid', gap: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              壁纸：{draft.wallpaper === '' ? '未设置' : '已设置'}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Button variant="outlined" size="small" onClick={() => void pickWallpaper()}>
+                选择壁纸图片…
+              </Button>
+              {draft.wallpaper !== '' ? (
+                <Button variant="outlined" size="small" color="error" onClick={() => update('wallpaper', '')}>
+                  移除壁纸
+                </Button>
+              ) : null}
+            </Box>
+          </Box>
+          <Box sx={{ display: 'grid', gap: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              字体
+            </Typography>
+            <TextField
+              select
+              size="small"
+              label="界面字体"
+              value={draft.fontFamily}
+              onChange={(event) => update('fontFamily', event.target.value)}
+              sx={{ maxWidth: 320 }}
+            >
+              {FONT_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+            <Button variant="outlined" size="small" onClick={() => void pickFont()}>
+              导入字体文件（.ttf / .otf）…
+            </Button>
           </Box>
         </Box>
 

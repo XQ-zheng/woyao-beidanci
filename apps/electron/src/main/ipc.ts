@@ -21,7 +21,7 @@ import {
   migrateDataFiles,
   writeLocationHint,
 } from './dataLocation';
-import { extractTermsFromFile, pickImportFile } from './importer';
+import { extractTermsFromFile, pickImageFile, pickImportFile } from './importer';
 import { IPC_CHANNELS, type IpcChannel } from '../shared/channels';
 
 /** 成功结果。 */
@@ -285,6 +285,10 @@ export function createIpcRouter({
     'settings.getDataLocation': {
       schema: z.undefined(),
       run: async () => ({ dataDir: app.getPath('userData') }),
+    },
+    'settings.pickWallpaper': {
+      schema: z.undefined(),
+      run: async () => pickImageFile(getWindow?.() ?? null),
     },
     'settings.pickDataFolder': {
       schema: z.undefined(),

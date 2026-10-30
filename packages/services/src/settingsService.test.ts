@@ -79,6 +79,8 @@ describe('settingsService：缺省快照', () => {
       trainingMode: 'EN_TO_ZH',
       questionStyle: 'CHOICE',
         rotationOrder: 'SEQUENTIAL',
+        wallpaper: '',
+        fontFamily: 'system',
       accent: 'uk',
       volume: 1,
       fontScale: 1,

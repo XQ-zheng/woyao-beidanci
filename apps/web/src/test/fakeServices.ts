@@ -27,6 +27,8 @@ export const defaultSettings: SettingsSnapshot = {
   trainingMode: 'MIXED',
   questionStyle: 'CHOICE',
       rotationOrder: 'SEQUENTIAL',
+      wallpaper: '',
+      fontFamily: 'system',
   accent: 'uk',
   volume: 1,
   fontScale: 1,

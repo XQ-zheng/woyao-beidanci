@@ -126,7 +126,7 @@ describe('AccountPage：手机验证码登录', () => {
     await requestCodeAndFill('222222');
     fireEvent.click(screen.getByRole('button', { name: '注册' }));
 
-    expect(await screen.findByText(/已经注册过了，请直接点「登录」/)).toBeInTheDocument();
+    expect(await screen.findByText(/此账号已经成功注册，请点击登录/)).toBeInTheDocument();
     expect(verifyOtp).not.toHaveBeenCalled();
   });
 
@@ -219,7 +219,7 @@ describe('AccountPage：邮箱辅助登录', () => {
     const requestOtp = vi.fn(async () => ({ challengeId: 'ch-e', isExistingUser: false }));
     renderAccount(createFakeServices({ auth: { requestOtp } }));
 
-    fireEvent.click(await screen.findByRole('tab', { name: '邮箱验证码（辅助）' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '邮箱验证码' }));
     fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'me@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
 

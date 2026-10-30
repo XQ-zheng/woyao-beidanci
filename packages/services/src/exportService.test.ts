@@ -289,7 +289,7 @@ describe('exportService：离线', () => {
         sync: { push: boom, pull: boom },
       },
       http: { getJson: boom, getText: boom },
-      llm: { translate: boom, defineWord: boom },
+      llm: { translate: boom, defineWord: boom, generateDistractorWords: boom },
       network: {
         isOnline: (): boolean => {
           throw new Error('export 路径不该查网络');

@@ -14,6 +14,7 @@ import { LOCAL_OWNER_SCOPE } from '@woyao/data';
 import { createAssociationService, type AssociationService } from './associationService';
 import { createAuthService, type AuthService } from './authService';
 import { createContentService, type ContentService } from './contentService';
+import { ServiceConflictError } from './errors';
 import { createExportService, type ExportService } from './exportService';
 import { createImportService, type ImportService } from './importService';
 import { createLibraryService, type LibraryService } from './libraryService';
@@ -66,15 +67,31 @@ export function createServiceRuntime(options: CreateRuntimeOptions): Services {
   const ownerScope = options.ownerScope ?? LOCAL_OWNER_SCOPE;
 
   const settings = createSettingsService({ context, defaultTimeZone });
-  const library = createLibraryService({ context, ownerScope });
-  const importService = createImportService({ context, library, ownerScope });
   const online = createOnlineService({ context });
-  const study = createStudyService({ context, settings, ownerScope });
+  // content 提前装配：library（R5 预热）与 study（R3 干扰项池）都要注入它。
   const content = createContentService({
     context,
     contentCache: context.repos.contentCache,
     online,
   });
+  // importWords 的晚绑定桥：libraryService 的 collectWord 复用导入链路（R4），
+  // 而 importService 构造又依赖 library——用可变桥打破装配顺序上的环。
+  const importBridge: { current: ImportService['importWords'] | null } = { current: null };
+  const library = createLibraryService({
+    context,
+    ownerScope,
+    content,
+    importWords: async (input) => {
+      const impl = importBridge.current;
+      if (impl === null) {
+        throw new ServiceConflictError('import', '导入服务尚未完成装配，暂时无法建词');
+      }
+      return impl(input);
+    },
+  });
+  const importService = createImportService({ context, library, ownerScope });
+  importBridge.current = (input) => importService.importWords(input);
+  const study = createStudyService({ context, settings, ownerScope, content });
   const association = createAssociationService({
     context,
     associations: context.repos.associations,

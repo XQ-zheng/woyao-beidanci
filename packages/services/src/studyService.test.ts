@@ -1,4 +1,4 @@
-import { ClockSkewError, STAGE_NEVER_REVIEWED, displayAnswerOf, type WordWithSenses } from '@woyao/core';
+import { ClockSkewError, STAGE_NEVER_REVIEWED } from '@woyao/core';
 import { makeUserWordId } from '@woyao/data';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -8,6 +8,7 @@ import {
   createReportService,
   createSettingsService,
   createStudyService,
+  selectAnswerSenseIndex,
   wordIdFromUserWordId,
   type ReportService,
   type SettingsService,
@@ -142,9 +143,14 @@ describe('studyService：开始会话', () => {
     expect(card?.mode).toBe('EN_TO_ZH');
     expect(card?.style).toBe('CHOICE');
     expect(card?.prompt).toBe('word1');
-    expect(card?.answer).toBe('释义1甲');
+    // R2：EN_TO_ZH 不再固定考义项 1，而是在全部非空义项里按 (seed, wordId) 确定性挑一个。
+    // 缺省种子 = `${deckId}|${localDate}`，与 startSession 的派生口径一致。
+    const expectedSense = ['释义1甲', '释义1乙'][
+      selectAnswerSenseIndex('deck-1|2025-03-01', 'w-1', 2)
+    ];
+    expect(card?.answer).toBe(expectedSense);
     // 选项含正确答案；候选不足时会少于 4 个，但绝不能没有答案。
-    expect(card?.options).toContain('释义1甲');
+    expect(card?.options).toContain(card?.answer);
     expect(card?.isNew).toBe(true);
     expect(card?.isFavorite).toBe(false);
     expect(card?.senses.map((sense) => sense.senseNo)).toEqual([1, 2]);
@@ -205,9 +211,9 @@ describe('studyService：开始会话', () => {
     expect(JSON.parse(row.plan_snapshot_json)).toMatchObject({ dailyNewLimit: 2, dailyReviewLimit: 1 });
   });
 
-  it('跨层锁定：卡片.answer 与 core.displayAnswerOf 对同一词/义项/方向逐字节一致', async () => {
+  it('跨层锁定：EN_TO_ZH 按确定性规则从全部义项挑答案，ZH_TO_EN 仍是词形', async () => {
     const { harness, settings, study } = makeEnv();
-    // 多义项词（首义项带首尾空白，验证 trim 是 core 的职责）；单义项词。
+    // 多义项词（首义项带首尾空白，验证 trim 口径）；单义项词。
     harness.seedWord({
       id: 'multi',
       lemma: 'Abandon',
@@ -223,36 +229,50 @@ describe('studyService：开始会话', () => {
     });
     harness.seedDeck({ id: 'deck-1', name: '词库', wordIds: ['multi', 'single'] });
 
-    const assertAnswerMatchesCore = (
-      card: { wordId: string; lemma: string; answer: string },
-      mode: 'EN_TO_ZH' | 'ZH_TO_EN',
-      senses: { pos: string; simpleZh: string }[],
-    ): void => {
-      const bundle: WordWithSenses = {
-        wordId: card.wordId,
-        lemma: card.lemma,
-        pos: senses[0]?.pos ?? '',
-        senses: senses.map((sense) => sense.simpleZh),
-      };
-      expect(card.answer).toBe(displayAnswerOf(bundle, mode));
-    };
-
-    // EN_TO_ZH，多义项：判卷答案取第一个非空义项（trim 由 core 做）。
+    // EN_TO_ZH，多义项：答案 = 非空义项里 selectAnswerSenseIndex(seed, wordId) 挑中的一条（trim）。
     const enSession = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
     const multiCard = enSession.cards.find((card) => card.wordId === 'multi');
     expect(multiCard?.mode).toBe('EN_TO_ZH');
-    expect(multiCard?.answer).toBe('放弃');
-    assertAnswerMatchesCore(multiCard!, 'EN_TO_ZH', [
-      { pos: 'v.', simpleZh: ' 放弃 ' },
-      { pos: 'n.', simpleZh: '放任' },
-    ]);
+    const expectedIndex = selectAnswerSenseIndex('deck-1|2025-03-01', 'multi', 2);
+    expect(multiCard?.answer).toBe(['放弃', '放任'][expectedIndex]);
+    // 卡片仍带全部义项（反馈区展示用）。
+    expect(multiCard?.senses.map((sense) => sense.simpleZh.trim())).toEqual(['放弃', '放任']);
 
     // ZH_TO_EN，单义项：判卷答案取词形（trim 由 core 做）。
     await settings.update({ trainingMode: 'ZH_TO_EN' });
     const zhSession = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
     const singleCard = zhSession.cards.find((card) => card.wordId === 'single');
     expect(singleCard?.mode).toBe('ZH_TO_EN');
-    assertAnswerMatchesCore(singleCard!, 'ZH_TO_EN', [{ pos: 'n.', simpleZh: '能力' }]);
+    expect(singleCard?.answer).toBe('Ability');
+  });
+
+  it('R2：submitAnswer 的 correctAnswer 与卡片 answer 同一条确定性口径（多义项不再只认义项 1）', async () => {
+    const { harness, study } = makeEnv();
+    harness.seedWord({
+      id: 'multi',
+      lemma: 'Abandon',
+      senses: [
+        { pos: 'v.', simpleZh: '放弃' },
+        { pos: 'n.', simpleZh: '放任' },
+      ],
+    });
+    harness.seedDeck({ id: 'deck-1', name: '词库', wordIds: ['multi'] });
+
+    const session = await study.startSession({ deckId: 'deck-1', now: new Date(NOW_ISO) });
+    const card = session.cards[0]!;
+    const result = await study.submitAnswer({
+      sessionId: session.sessionId,
+      deckId: 'deck-1',
+      wordId: 'multi',
+      mode: card.mode,
+      prompt: card.prompt,
+      answer: '',
+      isCorrect: true,
+      recognition: 'KNOWN',
+      answeredAt: new Date('2025-03-01T03:00:00.000Z'),
+    });
+
+    expect(result.correctAnswer).toBe(card.answer);
   });
 });
 

@@ -138,6 +138,70 @@ export interface UpdateWordSenseInput {
   readonly contextText?: string | null;
 }
 
+/**
+ * 全量重建义项的入参（词库页「义项增删」）。
+ *
+ * `senses` 数组就是重建后的完整义项列表，序号按数组顺序重排为 1..N：
+ * 想删义项就从数组里去掉，想加义项就在末尾追加。
+ */
+export const replaceWordSensesInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  senses: z
+    .array(
+      z.strictObject({
+        pos: z.string().max(32, '词性过长'),
+        simpleZh: z.string().trim().min(1, '简明释义不能为空'),
+        detailedZh: z.string().nullish(),
+      }),
+    )
+    .min(1, '至少保留一条义项')
+    .max(10, '义项数量不能超过 10'),
+});
+
+/** 全量重建义项入参的类型形状。 */
+export interface ReplaceWordSensesInput {
+  readonly wordId: string;
+  readonly senses: ReadonlyArray<{
+    readonly pos: string;
+    readonly simpleZh: string;
+    readonly detailedZh?: string | null;
+  }>;
+}
+
+/** 收藏一个干扰词形（五角星按钮）：词不存在时自动建词（词典 → LLM）并挂入生词本。 */
+export const collectWordInputSchema = z.strictObject({
+  lemma: z.string().trim().min(1, '词形不能为空').max(80, '词形过长'),
+});
+
+/**
+ * 设置一个词条的自定义干扰词（R5）。
+ *
+ * 每条 1..40 字符、最多 3 条；去重与「不含该词自身」由服务层校验
+ * （zod 做不了跨字段比较，而重复/自指只在真实词条上下文里才有意义）。
+ */
+export const setWordDistractorsInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+  lemmas: z
+    .array(z.string().trim().min(1, '干扰词不能为空').max(40, '干扰词过长'))
+    .max(3, '干扰词最多 3 个'),
+});
+
+/** 查询一个词条的自定义干扰词。 */
+export const listWordDistractorsInputSchema = z.strictObject({
+  wordId: z.string().min(1, '词条 id 不能为空'),
+});
+
+/** 查询一个词形的 AI 相近词池（contentService 缓存用）。 */
+export const distractorPoolInputSchema = z.strictObject({
+  lemma: z.string().trim().min(1, '词形不能为空'),
+});
+
+/** 一个 AI 相近干扰词（词形 + 中文释义）。 */
+export interface DistractorWordView {
+  readonly lemma: string;
+  readonly meaningZh: string;
+}
+
 /** 词库内的一个词（含义项与词频）。 */
 export interface DeckWordView {
   readonly wordId: string;

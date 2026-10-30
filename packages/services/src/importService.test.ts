@@ -26,7 +26,7 @@ function makeService(
   makeDeck: () => Promise<string>;
 } {
   const harness = createServiceTestHarness(
-    llm === undefined ? {} : { llm: { translate: async () => '', defineWord: llm.defineWord } },
+    llm === undefined ? undefined : { llm: { translate: async () => '', defineWord: llm.defineWord, generateDistractorWords: async () => [] } },
   );
   harnesses.push(harness);
   const library = createLibraryService({ context: harness.context, ownerScope: LOCAL_OWNER_SCOPE });
@@ -140,6 +140,7 @@ describe('importService：占位词条补全', () => {
       llm: {
         translate: async () => '',
         defineWord: async () => [{ pos: 'n.', simpleZh: '苹果', detailedZh: null }],
+        generateDistractorWords: async () => [],
       },
     });
     harnesses.push(harness0);

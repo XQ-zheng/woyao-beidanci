@@ -232,6 +232,21 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
         contextText: null,
       }),
     ),
+    replaceWordSenses: vi.fn(async (input: { senses: readonly { pos: string; simpleZh: string; detailedZh?: string | null }[] }) =>
+      input.senses.map((sense, index) => ({
+        senseNo: index + 1,
+        pos: sense.pos,
+        simpleZh: sense.simpleZh,
+        detailedZh: sense.detailedZh ?? null,
+        contextText: null,
+      })),
+    ),
+    collectWord: vi.fn(async (input: { lemma: string }) => ({
+      collected: true,
+      wordId: `w-collected-${input.lemma.toLowerCase()}`,
+    })),
+    setWordDistractors: vi.fn(async (input: { lemmas: readonly string[] }) => [...input.lemmas]),
+    listWordDistractors: vi.fn(async () => [] as string[]),
     createWord: vi.fn(async () => notUsed('library.createWord')),
     getFrequency: vi.fn(async () => notUsed('library.getFrequency')),
     ...overrides.library,
@@ -256,6 +271,7 @@ export function createFakeServices(overrides: FakeServiceOverrides = {}): Servic
 
   const content: Services['content'] = {
     getWordContent: vi.fn(async () => notUsed('content.getWordContent')),
+    getDistractorPool: vi.fn(async () => []),
     getPronunciation: vi.fn(async ({ wordId, accent }) => ({
       wordId,
       accent,

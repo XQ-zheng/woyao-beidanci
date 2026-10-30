@@ -81,6 +81,10 @@ export function createIpcServices(bridge: WoyaoBridge): Services {
     removeWordFromNotebook: (wordId: string) => call(bridge, 'library.removeWordFromNotebook', { wordId }),
     isInNotebook: (wordId: string) => call(bridge, 'library.isInNotebook', { wordId }),
     updateWordSense: (input: unknown) => call(bridge, 'library.updateWordSense', input),
+    replaceWordSenses: (input: unknown) => call(bridge, 'library.replaceWordSenses', input),
+    collectWord: (input: unknown) => call(bridge, 'library.collectWord', input),
+    setWordDistractors: (input: unknown) => call(bridge, 'library.setWordDistractors', input),
+    listWordDistractors: (input: unknown) => call(bridge, 'library.listWordDistractors', input),
     createWord: () => notWired('自建词'),
     getFrequency: () => notWired('词频查询'),
   };

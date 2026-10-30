@@ -9,7 +9,7 @@
  * defineWord 要求模型输出严格 JSON，解析失败按「AI 未给出释义」抛错，由调用方跳过。
  */
 import { createWorkBuddyCloud } from '@tencent-ai/workbuddy-cloud-sdk';
-import type { LlmPort, LlmWordSense } from '@woyao/services';
+import type { LlmDistractorWord, LlmPort, LlmWordSense } from '@woyao/services';
 
 import { CloudConfigError, type CloudPublicConfig } from './config';
 
@@ -58,6 +58,42 @@ function parseSenseArray(text: string): LlmWordSense[] {
     throw new Error('AI 返回的释义为空');
   }
   return senses;
+}
+
+/** 从模型回复里抠出相近干扰词数组（容忍 ```json 围栏，解析容错与 parseSenseArray 同一口径）。 */
+function parseDistractorArray(text: string, targetLemma: string): LlmDistractorWord[] {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/```\s*$/u, '');
+  const start = trimmed.indexOf('[');
+  const end = trimmed.lastIndexOf(']');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('AI 返回内容里没有找到干扰词 JSON');
+  }
+  const parsed: unknown = JSON.parse(trimmed.slice(start, end + 1));
+  if (!Array.isArray(parsed)) {
+    throw new Error('AI 返回的干扰词不是数组');
+  }
+  const targetKey = targetLemma.trim().toLowerCase();
+  const words: LlmDistractorWord[] = [];
+  for (const item of parsed) {
+    if (item === null || typeof item !== 'object') {
+      continue;
+    }
+    const record = item as { lemma?: unknown; meaningZh?: unknown };
+    const lemma = typeof record.lemma === 'string' ? record.lemma.trim() : '';
+    const meaningZh = typeof record.meaningZh === 'string' ? record.meaningZh.trim() : '';
+    if (lemma === '' || meaningZh === '') {
+      continue;
+    }
+    // 防御：模型偶尔会把目标词自己塞回来——它绝不能出现在干扰项里。
+    if (lemma.toLowerCase() === targetKey) {
+      continue;
+    }
+    words.push({ lemma, meaningZh });
+  }
+  if (words.length === 0) {
+    throw new Error('AI 返回的干扰词为空');
+  }
+  return words;
 }
 
 /**
@@ -143,6 +179,23 @@ export function createCloudLlm(options: CloudLlmOptions): LlmPort {
         `${kind}：${input.lemma}`,
       );
       return parseSenseArray(reply);
+    },
+
+    async generateDistractorWords(input: {
+      lemma: string;
+      count: number;
+    }): Promise<readonly LlmDistractorWord[]> {
+      const count = Number.isInteger(input.count) && input.count > 0 ? input.count : 3;
+      const reply = await chatWithRetry(
+        [
+          '你是出题助手。给定的一个英语单词，列出与它拼写相近、读音相近或容易混淆的英语单词。',
+          `只输出 JSON 数组，不要任何其他文字或代码围栏，恰好 ${String(count)} 个元素，每个元素形如：`,
+          '{"lemma":"相近的英文单词（小写）","meaningZh":"它的简明中文释义"}',
+          '数组里绝不能包含目标单词本身。',
+        ].join('\n'),
+        `目标单词：${input.lemma}`,
+      );
+      return parseDistractorArray(reply, input.lemma);
     },
   };
 }

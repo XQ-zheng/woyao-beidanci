@@ -205,6 +205,45 @@ export function createIpcRouter({
           },
         ),
     },
+    'library.replaceWordSenses': {
+      schema: z.object({
+        wordId: z.string().min(1),
+        senses: z
+          .array(
+            z.object({
+              pos: z.string().max(32),
+              simpleZh: z.string().trim().min(1),
+              detailedZh: z.string().nullish(),
+            }),
+          )
+          .min(1)
+          .max(10),
+      }),
+      run: async (payload) =>
+        services.library.replaceWordSenses(
+          payload as {
+            wordId: string;
+            senses: { pos: string; simpleZh: string; detailedZh?: string | null }[];
+          },
+        ),
+    },
+    'library.collectWord': {
+      schema: z.object({ lemma: z.string().trim().min(1) }),
+      run: async (payload) => services.library.collectWord(payload as { lemma: string }),
+    },
+    'library.setWordDistractors': {
+      schema: z.object({
+        wordId: z.string().min(1),
+        lemmas: z.array(z.string().trim().min(1).max(40)).max(3),
+      }),
+      run: async (payload) =>
+        services.library.setWordDistractors(payload as { wordId: string; lemmas: string[] }),
+    },
+    'library.listWordDistractors': {
+      schema: z.object({ wordId: z.string().min(1) }),
+      run: async (payload) =>
+        services.library.listWordDistractors(payload as { wordId: string }),
+    },
     'import.importWords': {
       schema: z.object({
         deckId: z.string().min(1),

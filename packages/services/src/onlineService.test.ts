@@ -181,18 +181,20 @@ describe('onlineService：translate', () => {
   it('已配 llm 正常返回；llm 抛错 → ProviderError', async () => {
     const ok = makeOnline({
       llm: {
-        translate: async () => '放弃',
-        defineWord: async () => [],
+          translate: async () => '放弃',
+          defineWord: async () => [],
+          generateDistractorWords: async () => [],
       },
     });
     await expect(ok.service.translate({ text: 'abandon', target: 'zh' })).resolves.toBe('放弃');
 
     const failing = makeOnline({
       llm: {
-        translate: async () => {
-          throw new Error('upstream down');
-        },
-        defineWord: async () => [],
+          translate: async () => {
+              throw new Error('upstream down');
+          },
+          defineWord: async () => [],
+          generateDistractorWords: async () => [],
       },
     });
     await expect(failing.service.translate({ text: 'abandon', target: 'zh' })).rejects.toBeInstanceOf(

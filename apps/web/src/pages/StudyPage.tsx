@@ -7,6 +7,7 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import DialogTitle from '@mui/material/DialogTitle';
+import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
 import type { ReactElement } from 'react';
 import { useEffect, useRef, useState } from 'react';
@@ -65,6 +66,8 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
   const [relearnOpen, setRelearnOpen] = useState(false);
   /** 确认重学后正在重开会话。 */
   const [relearning, setRelearning] = useState(false);
+  /** 本题已收藏成功的干扰选项文本（星标变实心，纯本地状态，刷新后以服务端为准）。 */
+  const [collectedTexts, setCollectedTexts] = useState<ReadonlySet<string>>(new Set());
 
   // 时钟只作为“取当前时刻”的注入点，不参与依赖：避免默认 `() => new Date()` 每次渲染
   // 都换身份，导致重建会话的 effect 反复触发。
@@ -292,11 +295,25 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
     }
   }
 
+  /**
+   * 收藏一个干扰选项的来源词形（R4）：调 collectWord（词不存在时自动建词并挂入生词本），
+   * 成功后该选项旁的星标变实心。失败给行内提示，不弹窗打断学习。
+   */
+  async function collectDistractor(text: string, lemma: string): Promise<void> {
+    try {
+      await activeServices.library.collectWord({ lemma });
+      setCollectedTexts((previous) => new Set(previous).add(text));
+    } catch (cause: unknown) {
+      setSubmitError(`收藏失败：${describeError(cause)}`);
+    }
+  }
+
   /** 进入下一题；最后一题先结束会话拿到真实汇总，再带汇总去完成页。 */
   async function advance(): Promise<void> {
     if (!isLastCard) {
       setIndex(index + 1);
       setFeedback(null);
+      setCollectedTexts(new Set());
       setCardShownAt(nowRef.current().getTime());
       return;
     }
@@ -421,6 +438,44 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
               </Box>
             ))}
           </Box>
+          {card.style === 'CHOICE' && card.options.length > 1 ? (
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {card.options
+                .filter((text) => text !== card.answer)
+                .map((text) => {
+                  const lemma =
+                    (card.distractorWords ?? []).find((item) => item.text === text)?.lemma ?? null;
+                  const collected = collectedTexts.has(text);
+                  return (
+                    <Box
+                      key={text}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 0.5,
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        px: 1,
+                        py: 0.25,
+                      }}
+                    >
+                      <Typography variant="body2">{text}</Typography>
+                      {lemma !== null ? (
+                        <IconButton
+                          size="small"
+                          aria-label={collected ? `已收藏 ${lemma}` : `收藏 ${lemma}`}
+                          title={`收藏「${lemma}」到生词本`}
+                          onClick={() => void collectDistractor(text, lemma)}
+                        >
+                          {collected ? '★' : '☆'}
+                        </IconButton>
+                      ) : null}
+                    </Box>
+                  );
+                })}
+            </Box>
+          ) : null}
           <Button
             variant="contained"
             onClick={() => void advance()}

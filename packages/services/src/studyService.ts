@@ -21,6 +21,7 @@
  */
 
 import {
+  REQUIRED_DISTRACTOR_COUNT,
   STAGE_NEVER_REVIEWED,
   buildDailyQueue,
   createInitialLearningState,
@@ -45,6 +46,7 @@ import {
   submitAnswerInputSchema,
   toLocalDateString,
   wordRefInputSchema,
+  type DistractorWordView,
   type SenseView,
   type FrequencyView,
 } from './dto';
@@ -78,6 +80,15 @@ export interface CardView {
    * 只剩 1 个选项时 UI 应退化为“直接显示答案”。
    */
   readonly options: string[];
+  /**
+   * 每个干扰选项的「选项文本 → 来源词形」（R4 收藏干扰词用）。
+   *
+   * options 是释义文本，UI 没法从文本反查词形去收藏；这里由服务层在组装选项时
+   * 顺手记下每个干扰项的来源词形（自定义干扰词的词形 / AI 相近词的词形 /
+   * 词库候选词的词形）。查不到来源的选项不出现在这个数组里，UI 据此不渲染收藏按钮。
+   * `style === 'REVEAL'` 时为空数组。
+   */
+  readonly distractorWords?: ReadonlyArray<{ text: string; lemma: string }>;
   /** 全部义项（答题后展示详细释义）。 */
   readonly senses: SenseView[];
   /** 词频重要性（没有语料上下文时为 `UNKNOWN`，不按“低频”处理）。 */
@@ -203,6 +214,16 @@ export interface StudyServiceOptions {
   readonly settings: SettingsService;
   /** 归属范围（决定读哪个生词本判断“已收藏”）。缺省 `LOCAL`。 */
   readonly ownerScope?: string;
+  /**
+   * 内容服务（可选注入，R3）：组装选择题时用它取 AI 相近干扰词池。
+   *
+   * 缺省（未注入）时跳过 AI 干扰项，直接回退词库候选机制——学习卡不因 AI
+   * 未配置而不可用。注入最小结构接口而不是整个 `ContentService`，
+   * 避免服务间的强类型耦合与装配环。
+   */
+  readonly content?: {
+    getDistractorPool(input: { lemma: string }): Promise<ReadonlyArray<DistractorWordView>>;
+  };
 }
 
 /** 累计错次达到该值起提示“这个单词已经错了 N 次”（需求的硬要求）。 */
@@ -228,6 +249,85 @@ function toWordWithSenses(
     pos: senses[0]?.pos ?? '',
     senses: senses.map((sense) => sense.simpleZh),
   };
+}
+
+/**
+ * FNV-1a 32 位散列（确定性，不依赖 Math.random）。
+ *
+ * 只用于「从多个义项里挑一个」这类**内部均匀化**，不承担安全职责。
+ *
+ * @param value 待散列字符串。
+ * @returns 无符号 32 位整数。
+ */
+function fnv1a32(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * 确定性挑选本题考查的义项下标（R2 修 bug 的核心）。
+ *
+ * 之前 `EN_TO_ZH` 的正确答案固定取义项 1——多义词永远只考第一个释义。
+ * 现在用 `hash(seed + ':' + wordId) % 义项数` 在该词**全部非空义项**里确定性挑选：
+ * 同一 (seed, wordId) 在任何端、任何时刻都得到同一下标（种子确定性不破坏），
+ * 不同词/不同天则自然分散到不同义项。
+ *
+ * `buildCard` 与 `submitAnswer` 的判卷口径共用本函数，两处绝不会各挑各的。
+ *
+ * @param seed 会话级种子。
+ * @param wordId 词条 id。
+ * @param senseCount 该词非空义项数。
+ * @returns `[0, senseCount)` 内的下标；`senseCount <= 0` 时返回 0。
+ */
+export function selectAnswerSenseIndex(seed: string, wordId: string, senseCount: number): number {
+  if (!Number.isInteger(senseCount) || senseCount <= 0) {
+    return 0;
+  }
+  return fnv1a32(`${seed}:${wordId}`) % senseCount;
+}
+
+/**
+ * 从会话行的计划快照里取回会话种子。
+ *
+ * `startSession` 把种子随计划一起写进 `plan_snapshot_json`（判卷要用）；
+ * 旧版本会话的快照里没有 `seed` 字段，解析失败/缺失一律返回 `null`，
+ * 调用方回退到 core「第一个非空义项」的旧口径——宁可口径退一档，也不抛错。
+ *
+ * @param planSnapshotJson 会话行的快照 JSON（可空）。
+ * @returns 会话种子；取不到时为 `null`。
+ */
+function parseSessionSeed(planSnapshotJson: string | null): string | null {
+  if (planSnapshotJson === null) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(planSnapshotJson);
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      typeof (parsed as { seed?: unknown }).seed === 'string'
+    ) {
+      return (parsed as { seed: string }).seed;
+    }
+  } catch {
+    // 损坏的快照：走旧口径，不影响作答主流程。
+  }
+  return null;
+}
+
+/** 选项文本的排重口径：去首尾空白 + 小写（与 core 的 normalizeText 同一口径）。 */
+function normalizeOptionKey(text: string): string {
+  return text.trim().toLowerCase();
+}
+
+/** 一个干扰选项：展示文本 + 来源词形（收藏五角星用）。 */
+interface DistractorEntry {
+  readonly text: string;
+  readonly lemma: string;
 }
 
 /**
@@ -273,6 +373,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
   const { context } = options;
   const { settings } = options;
   const ownerScope = options.ownerScope ?? DEFAULT_OWNER_SCOPE;
+  const distractorContent = options.content ?? null;
 
   /** 读一个词的全部义项，并按 `senseNo` 升序（数据层已保证顺序，这里只做投影）。 */
   async function loadSenses(wordId: string): Promise<SenseView[]> {
@@ -319,9 +420,27 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
   }
 
   /**
+   * 取一个词形的 AI 相近干扰词池；未注入内容服务或取池失败时返回空数组（绝不抛错）。
+   *
+   * @param lemma 词形。
+   * @returns 相近词池（可能为空）。
+   */
+  async function loadDistractorPool(lemma: string): Promise<ReadonlyArray<DistractorWordView>> {
+    if (distractorContent === null) {
+      return [];
+    }
+    try {
+      return await distractorContent.getDistractorPool({ lemma });
+    } catch (cause: unknown) {
+      context.log.warn(`AI 相近干扰词池读取失败：${lemma}`, cause);
+      return [];
+    }
+  }
+
+  /**
    * 组装一张卡片。
    *
-   * @param input 卡片上下文（词条、计划、种子、题型、候选池等）。
+   * @param input 卡片上下文（词条、计划、种子、题型、候选池加载器等）。
    * @returns 卡片视图。
    */
   async function buildCard(input: {
@@ -332,7 +451,8 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
     questionStyle: 'CHOICE' | 'REVEAL';
     seed: string;
     frequencyLookup: Awaited<ReturnType<typeof loadFrequencyLookup>> | null;
-    candidates: readonly WordWithSenses[] | null;
+    /** 词库候选池加载器（REVEAL 不需要；CHOICE 里也只在 AI/自定义席位不足时才真正加载）。 */
+    loadCandidates: () => Promise<readonly WordWithSenses[]>;
   }): Promise<CardView | null> {
     const word = await context.repos.words.getWordById(input.wordId);
     if (word === null) {
@@ -344,22 +464,127 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
     // `MIXED` 在这里解析成具体方向：卡片必须明确“问的是英译中还是中译英”，
     // 同一 (seed, wordId) 永远得到同一方向，因此重开会话也能复现同一套题。
     const mode = resolveDistractorMode(input.trainingMode, input.seed, word.id);
+
+    // R2 修 bug：EN_TO_ZH 不再固定考义项 1，而是在全部非空义项里按 (seed, wordId)
+    // 确定性挑一个；ZH_TO_EN 的答案仍是词形，不受影响。
+    const nonEmptySenses = senses.filter((sense) => sense.simpleZh.trim() !== '');
     const bundle = toWordWithSenses(word, senses);
-    // 判卷答案直接来自 core：与 `generateDistractors` 里选项的正确答案是同一个函数。
-    const answer = displayAnswerOf(bundle, mode);
+    let answer = displayAnswerOf(bundle, mode);
+    let target = bundle;
+    if (mode === 'EN_TO_ZH' && nonEmptySenses.length > 0) {
+      const selected =
+        nonEmptySenses[selectAnswerSenseIndex(input.seed, word.id, nonEmptySenses.length)] ??
+        nonEmptySenses[0]!;
+      answer = selected.simpleZh.trim();
+      // 传给 generateDistractors 的 target 只含被考的义项：core 的“候选与目标义项有交集
+      // 则剔除”的排重只应对被考义项生效——带全部义项会让正确答案被其他义项误判成重复。
+      target = {
+        wordId: word.id,
+        lemma: word.lemma,
+        pos: selected.pos,
+        senses: [selected.simpleZh],
+      };
+    }
     const prompt = mode === 'EN_TO_ZH' ? word.lemma : promptOfZhToEn(senses);
 
     let options: string[] = [];
+    let distractorWords: ReadonlyArray<DistractorEntry> = [];
     if (input.questionStyle === 'CHOICE') {
-      const distractors = generateDistractors(
-        bundle,
-        input.candidates ?? [],
-        input.trainingMode,
-        input.seed,
-      );
+      const entries: DistractorEntry[] = [];
+      const usedKeys = new Set<string>([normalizeOptionKey(answer)]);
+      /** 占一个干扰席：文本为空或与已选项重复时放弃（绝不编造、正确答案绝不重复出现）。 */
+      const occupy = (text: string, lemma: string): boolean => {
+        const key = normalizeOptionKey(text);
+        if (text.trim() === '' || usedKeys.has(key)) {
+          return false;
+        }
+        usedKeys.add(key);
+        entries.push({ text, lemma });
+        return true;
+      };
+
+      if (mode === 'EN_TO_ZH') {
+        // ① 自定义干扰词（R5）必占一席：选项文本取该词形 AI 相近词池里的中文释义
+        //    （setWordDistractors 保存时已预热缓存）；池里没有可用释义就放弃该席，
+        //    绝不编造。来源词形记用户指定的词形本身，收藏五角星按它建词。
+        const customLemmas = await context.repos.words.listWordDistractors(word.id);
+        for (const customLemma of customLemmas) {
+          if (entries.length >= REQUIRED_DISTRACTOR_COUNT) {
+            break;
+          }
+          const pool = await loadDistractorPool(customLemma);
+          for (const item of pool) {
+            if (occupy(item.meaningZh, customLemma)) {
+              break;
+            }
+          }
+        }
+        // ② AI 相近词池（R3）填充剩余席位：文本 = 相近词的中文释义，词形记相近词本身。
+        if (entries.length < REQUIRED_DISTRACTOR_COUNT) {
+          const pool = await loadDistractorPool(word.lemma);
+          for (const item of pool) {
+            if (entries.length >= REQUIRED_DISTRACTOR_COUNT) {
+              break;
+            }
+            if (item.lemma.toLowerCase() === word.lemma.toLowerCase()) {
+              continue;
+            }
+            occupy(item.meaningZh, item.lemma);
+          }
+        }
+      } else {
+        // ZH_TO_EN 的选项是英文词形：自定义干扰词直接以词形占席（无需释义），
+        // AI 池给与目标词拼写相近的词形。
+        const customLemmas = await context.repos.words.listWordDistractors(word.id);
+        for (const customLemma of customLemmas) {
+          if (entries.length >= REQUIRED_DISTRACTOR_COUNT) {
+            break;
+          }
+          occupy(customLemma, customLemma);
+        }
+        if (entries.length < REQUIRED_DISTRACTOR_COUNT) {
+          const pool = await loadDistractorPool(word.lemma);
+          for (const item of pool) {
+            if (entries.length >= REQUIRED_DISTRACTOR_COUNT) {
+              break;
+            }
+            if (item.lemma.toLowerCase() === word.lemma.toLowerCase()) {
+              continue;
+            }
+            occupy(item.lemma, item.lemma);
+          }
+        }
+      }
+
+      // ③ 仍不足 → 回退现有词库候选机制（core.generateDistractors，相似度排序，
+      //    绝不编造）。候选池按需加载：AI/自定义已凑满 3 席时整库义项一次都不读。
+      if (entries.length < REQUIRED_DISTRACTOR_COUNT) {
+        const candidates = await input.loadCandidates();
+        const fallback = generateDistractors(target, candidates, input.trainingMode, input.seed);
+        // 干扰项文本 → 候选词形：收藏五角星需要知道选项来自哪个词。
+        const lemmaByText = new Map<string, string>();
+        for (const candidate of candidates) {
+          const text = displayAnswerOf(candidate, mode);
+          const key = normalizeOptionKey(text);
+          if (text !== '' && !lemmaByText.has(key)) {
+            lemmaByText.set(key, candidate.lemma);
+          }
+        }
+        for (const text of fallback) {
+          if (entries.length >= REQUIRED_DISTRACTOR_COUNT) {
+            break;
+          }
+          occupy(text, lemmaByText.get(normalizeOptionKey(text)) ?? '');
+        }
+      }
+
       // 选项含正确答案并按种子打乱：顺序也要可复现，否则同一天两次开会话的
       // 同一道题选项位置会变，用户会以为“题变了”。
-      options = seededShuffle([answer, ...distractors], `${input.seed}|${word.id}|options`);
+      options = seededShuffle(
+        [answer, ...entries.map((entry) => entry.text)],
+        `${input.seed}|${word.id}|options`,
+      );
+      distractorWords = entries;
     }
 
     return {
@@ -372,6 +597,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       prompt,
       answer,
       options,
+      distractorWords,
       senses,
       frequency: toFrequencyView(input.frequencyLookup, word.id),
       isNew: input.state === undefined || input.state.stage === STAGE_NEVER_REVIEWED,
@@ -442,8 +668,14 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           ? await loadFrequencyLookup(context.repos.words, validated.exam, validated.corpusVersion)
           : null;
       const favoriteWordIds = await loadFavoriteWordIds();
-      const candidates =
-        snapshot.questionStyle === 'CHOICE' ? await loadDistractorCandidates(deckWordIds) : null;
+      // 候选池改为**按需加载**（R3）：AI/自定义干扰词凑满 3 席时，整库义项一次都不读。
+      let candidatesCache: readonly WordWithSenses[] | null = null;
+      const loadCandidates = async (): Promise<readonly WordWithSenses[]> => {
+        if (candidatesCache === null) {
+          candidatesCache = await loadDistractorCandidates(deckWordIds);
+        }
+        return candidatesCache;
+      };
 
       const cards: CardView[] = [];
       for (const wordId of queue.interleavedWordIds) {
@@ -455,7 +687,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           questionStyle: snapshot.questionStyle,
           seed,
           frequencyLookup,
-          candidates,
+          loadCandidates,
         });
         if (card !== null) {
           cards.push(card);
@@ -473,7 +705,9 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
         newCount: queue.newWordIds.length,
         reviewCount: queue.reviewWordIds.length,
         activeDurationMs: 0,
-        planSnapshotJson: JSON.stringify(plan),
+        // 种子随计划一起入快照：submitAnswer 判卷要用同一种子复算“考哪个义项”。
+        // 旧快照没有 seed 字段时判卷回退 core 旧口径（见 parseSessionSeed）。
+        planSnapshotJson: JSON.stringify({ ...plan, seed }),
         deviceId: context.device.deviceId(),
         revision: 0,
       });
@@ -574,11 +808,29 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
         throw new ServiceNotFoundError('learningState', userWordId);
       }
 
-      // 正确答案按作答方向给出，口径来自 core 的 displayAnswerOf。
+      // 正确答案按作答方向给出。EN_TO_ZH 的义项选择必须与 buildCard 同一条确定性规则
+      // （selectAnswerSenseIndex + 会话快照里的种子），否则“卡片上考义项 2、
+      // 反馈区却说正确答案是义项 1”这类口径分叉会出现；旧会话快照没有种子时
+      // 回退 core 的「第一个非空义项」旧口径。
       const word = await context.repos.words.getWordById(validated.wordId);
       const senses = word === null ? [] : await loadSenses(word.id);
-      const correctAnswer =
-        word === null ? '' : displayAnswerOf(toWordWithSenses(word, senses), mode);
+      let correctAnswer = '';
+      if (word !== null) {
+        if (mode === 'EN_TO_ZH') {
+          const nonEmptySenses = senses.filter((sense) => sense.simpleZh.trim() !== '');
+          const snapshotSeed = parseSessionSeed(session.planSnapshotJson);
+          if (snapshotSeed !== null && nonEmptySenses.length > 0) {
+            correctAnswer =
+              nonEmptySenses[
+                selectAnswerSenseIndex(snapshotSeed, word.id, nonEmptySenses.length)
+              ]?.simpleZh.trim() ?? '';
+          } else {
+            correctAnswer = displayAnswerOf(toWordWithSenses(word, senses), mode);
+          }
+        } else {
+          correctAnswer = displayAnswerOf(toWordWithSenses(word, senses), mode);
+        }
+      }
 
       const frequencyLookup =
         validated.exam !== undefined && validated.corpusVersion !== undefined

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Services, SessionView } from '@woyao/services';
 
 import { ServiceProvider } from '../services/ServiceProvider';
-import { createFakeServices, makeAnswerResult, makeSession, makeSummary } from '../test/fakeServices';
+import { createFakeServices, makeAnswerResult, makeCard, makeSession, makeSummary } from '../test/fakeServices';
 import { appTheme } from '../theme';
 import ReviewPage from './ReviewPage';
 import StudyPage from './StudyPage';
@@ -164,5 +164,64 @@ describe('StudyPage：今日已背完后的重新开始', () => {
     expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
     // 重开后有卡可学
     expect(await screen.findByRole('button', { name: '认识' })).toBeInTheDocument();
+  });
+});
+
+describe('StudyPage：干扰项收藏（R4 五角星）', () => {
+  /** 造一张带干扰项来源词形的卡（庆祝没有来源词形 → 不渲染收藏按钮）。 */
+  function makeChoiceCard(): SessionView {
+    return makeSession([
+      makeCard({
+        options: ['放弃', '吸收', '维持', '庆祝'],
+        distractorWords: [
+          { text: '吸收', lemma: 'absorb' },
+          { text: '维持', lemma: 'maintain' },
+        ],
+      }),
+    ]);
+  }
+
+  it('反馈出现后展示干扰项；有来源词形的选项带收藏按钮，没有的不带', async () => {
+    renderStudy({ session: makeChoiceCard() });
+
+    // 作答前不渲染任何干扰项/星标。
+    expect(screen.queryByRole('button', { name: /收藏/ })).toBeNull();
+
+    fireEvent.click(await screen.findByRole('button', { name: '不认识' }));
+
+    expect(await screen.findByText('吸收')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '收藏 absorb' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '收藏 maintain' })).toBeInTheDocument();
+    // 庆祝没有来源词形 → 没有收藏按钮。
+    expect(screen.queryByRole('button', { name: /收藏.*庆祝/u })).toBeNull();
+  });
+
+  it('点击星标调 collectWord（传来源词形），成功后星标变实心', async () => {
+    const collectWord = vi.fn(async () => ({ collected: true, wordId: 'w-absorb' }));
+    renderStudy({
+      services: createFakeServices({ library: { collectWord } }),
+      session: makeChoiceCard(),
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: '不认识' }));
+    fireEvent.click(await screen.findByRole('button', { name: '收藏 absorb' }));
+
+    await waitFor(() => expect(collectWord).toHaveBeenCalledWith({ lemma: 'absorb' }));
+    expect(await screen.findByRole('button', { name: '已收藏 absorb' })).toBeInTheDocument();
+  });
+
+  it('收藏失败给行内提示，不打断学习', async () => {
+    const collectWord = vi.fn(async () => {
+      throw new Error('云端 AI 未配置');
+    });
+    renderStudy({
+      services: createFakeServices({ library: { collectWord } }),
+      session: makeChoiceCard(),
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: '不认识' }));
+    fireEvent.click(await screen.findByRole('button', { name: '收藏 absorb' }));
+
+    expect(await screen.findByText(/收藏失败：云端 AI 未配置/)).toBeInTheDocument();
   });
 });

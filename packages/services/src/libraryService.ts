@@ -25,19 +25,26 @@ import {
   createWordInputSchema,
   getFrequencyInputSchema,
   listDeckWordsInputSchema,
+  listWordDistractorsInputSchema,
   parseOrThrow,
   renameDeckInputSchema,
+  replaceWordSensesInputSchema,
+  collectWordInputSchema,
+  setWordDistractorsInputSchema,
   updateWordSenseInputSchema,
   type CreateWordInput,
   type CreatedWordView,
   type DeckSummary,
   type DeckWordView,
+  type DistractorWordView,
   type FrequencyView,
+  type ReplaceWordSensesInput,
   type SenseView,
   type UpdateWordSenseInput,
 } from './dto';
 import { ServiceConflictError, ServiceNotFoundError, ServiceValidationError } from './errors';
 import { loadFrequencyLookup, toFrequencyView, type FrequencyLookup } from './frequencyView';
+import type { ImportWordsResult } from './importService';
 import type { ServiceContext } from './ports';
 import { ensureUserSource as ensureLocalUserSource } from './sourceBootstrap';
 
@@ -72,6 +79,29 @@ export interface LibraryService {
    * 更新会推进义项 revision（同步侧按行合并）。
    */
   updateWordSense(input: UpdateWordSenseInput): Promise<SenseView>;
+  /**
+   * 全量重建词条义项（词库页「义项增删」）。
+   *
+   * `senses` 数组按顺序重排为 1..N：多出的旧义项 soft delete、不足的新 insert，
+   * 全部在一个事务里（数据层保证）。词条不存在抛 `ServiceNotFoundError`。
+   */
+  replaceWordSenses(input: ReplaceWordSensesInput): Promise<SenseView[]>;
+  /**
+   * 收藏一个干扰词形（学习页五角星，R4）。
+   *
+   * 词已在生词本 → 直接返回其 wordId；否则复用导入服务（内置词典 → LLM 两级释义）
+   * 建词并挂入「我的单词本」。两级释义都拿不到时抛 `ServiceConflictError`（不建占位词条）。
+   */
+  collectWord(input: { lemma: string }): Promise<{ collected: boolean; wordId: string }>;
+  /**
+   * 设置一个词条的自定义干扰词（R5，全量替换，最多 3 条）。
+   *
+   * 词形按「去空白 + 小写」去重、剔除该词自身；保存后对每个干扰词预热 AI 干扰释义
+   * （`content.getDistractorPool`，失败不影响保存）。返回保存后的完整列表。
+   */
+  setWordDistractors(input: { wordId: string; lemmas: readonly string[] }): Promise<string[]>;
+  /** 读一个词条的自定义干扰词（按保存顺序）。 */
+  listWordDistractors(input: { wordId: string }): Promise<string[]>;
   /** 读一个词在指定语料里的重要性。 */
   getFrequency(input: { wordId: string; exam: string; corpusVersion: string }): Promise<FrequencyView>;
 }
@@ -81,7 +111,30 @@ export interface LibraryServiceOptions {
   readonly context: ServiceContext;
   /** 归属范围：未登录用 `LOCAL`，登录后用 `acct:<id>`。缺省 `LOCAL`。 */
   readonly ownerScope?: string;
+  /**
+   * 内容服务（可选注入，R5）：保存自定义干扰词后用它预热 AI 干扰释义。
+   *
+   * 不直接 import `contentService` 是为了斩断装配环——content 与 library 都由
+   * runtime 按序装配，这里只要一个最小结构接口即可。
+   */
+  readonly content?: {
+    getDistractorPool(input: { lemma: string }): Promise<ReadonlyArray<DistractorWordView>>;
+  };
+  /**
+   * 导入服务（可选注入，R4）：收藏干扰词时复用「词典 → LLM」的建词链路。
+   *
+   * importService 依赖 libraryService（建库校验），所以 runtime 里 library 先建、
+   * import 后建——这里注入一个**转发函数**，runtime 在 import 装配完成后把真实现
+   * 接进来（late binding），避免为了注入顺序去改装配结构。
+   */
+  readonly importWords?: ImportWordsFn;
 }
+
+/** `ImportService.importWords` 的最小函数形状（注入用，避免整包类型依赖）。 */
+export type ImportWordsFn = (input: {
+  deckId: string;
+  terms: readonly { lemma: string; phrase?: boolean }[];
+}) => Promise<ImportWordsResult>;
 
 /**
  * 判断一个异常是否是 SQLite 外键约束失败。
@@ -109,6 +162,8 @@ function isForeignKeyViolation(error: unknown): boolean {
 export function createLibraryService(options: LibraryServiceOptions): LibraryService {
   const { context } = options;
   const ownerScope = options.ownerScope ?? LOCAL_OWNER_SCOPE;
+  const contentPool = options.content ?? null;
+  const importWords = options.importWords ?? null;
 
   /** 读一份语料（实现见 `frequencyView.ts`，与 `studyService` 共用同一份口径）。 */
   async function loadLookup(exam: string, corpusVersion: string): Promise<FrequencyLookup> {
@@ -433,6 +488,135 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
         detailedZh: updated.detailedZh ?? null,
         contextText: updated.contextText ?? null,
       };
+    },
+
+    async replaceWordSenses(input: ReplaceWordSensesInput): Promise<SenseView[]> {
+      const validated = parseOrThrow(replaceWordSensesInputSchema, input, '重建义项');
+      const word = await requireWord(validated.wordId);
+      if (word.ownerScope !== ownerScope) {
+        throw new ServiceNotFoundError('word', validated.wordId);
+      }
+      const records = await context.repos.words.replaceWordSenses({
+        wordId: validated.wordId,
+        senses: validated.senses.map((sense) => ({
+          pos: sense.pos,
+          simpleZh: sense.simpleZh,
+          detailedZh: sense.detailedZh ?? null,
+        })),
+        // 新增义项统一挂「本地自建来源」（服务层在 createWord 前也用同一来源）；
+        // 沿用既有义项来源的情况由数据层兜底处理。
+        sourceId: LOCAL_USER_SOURCE_ID,
+        deviceId: context.device.deviceId(),
+        now: context.clock.now(),
+      });
+      return records.map((record) => ({
+        senseNo: record.senseNo,
+        pos: record.pos,
+        simpleZh: record.simpleZh,
+        detailedZh: record.detailedZh ?? null,
+        contextText: record.contextText ?? null,
+      }));
+    },
+
+    async collectWord(input: { lemma: string }): Promise<{ collected: boolean; wordId: string }> {
+      const validated = parseOrThrow(collectWordInputSchema, input, '收藏干扰词');
+      const notebook = await findNotebookDeck(true);
+      if (notebook === null) {
+        // `create: true` 时不可能为 null；与 addWordToNotebook 同样的显式分支。
+        throw new ServiceConflictError('notebook', '生词本创建失败');
+      }
+
+      // 幂等：词已存在（本归属或内置词典）且已挂在生词本里 → 直接返回，不再走导入。
+      const findWord = async (): Promise<WordRecord | null> =>
+        (await context.repos.words.getWordByLemma(validated.lemma, ownerScope)) ??
+        (await context.repos.words.getWordByLemma(validated.lemma, LOCAL_OWNER_SCOPE));
+      const existing = await findWord();
+      if (existing !== null) {
+        const wordIds = await context.repos.words.listDeckWordIds(notebook.id);
+        if (wordIds.includes(existing.id)) {
+          return { collected: true, wordId: existing.id };
+        }
+      }
+
+      if (importWords === null) {
+        throw new ServiceConflictError('import', '导入服务未装配，无法自动建词收藏');
+      }
+      // 复用导入链路：内置词典 → LLM 两级释义，绝不建「暂无释义」占位词条。
+      const result: ImportWordsResult = await importWords({
+        deckId: notebook.id,
+        terms: [{ lemma: validated.lemma }],
+      });
+      const word = await findWord();
+      if (word === null) {
+        const skipped = result.skipped.find(
+          (item) => item.lemma.toLowerCase() === validated.lemma.toLowerCase(),
+        );
+        throw new ServiceConflictError(
+          'word',
+          `收藏失败：${skipped?.reason ?? '词典与云端 AI 都没有给出释义'}`,
+        );
+      }
+      return { collected: true, wordId: word.id };
+    },
+
+    async setWordDistractors(input: {
+      wordId: string;
+      lemmas: readonly string[];
+    }): Promise<string[]> {
+      const validated = parseOrThrow(setWordDistractorsInputSchema, input, '设置干扰词');
+      const word = await requireWord(validated.wordId);
+      if (word.ownerScope !== ownerScope) {
+        throw new ServiceNotFoundError('word', validated.wordId);
+      }
+
+      // 去重（小写口径）并剔除该词自身——把自己的释义放进自己的干扰项没有意义。
+      const selfKey = word.lemma.toLowerCase();
+      const unique: string[] = [];
+      const seen = new Set<string>();
+      for (const lemma of validated.lemmas) {
+        const key = lemma.toLowerCase();
+        if (key === selfKey || seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        unique.push(lemma);
+      }
+      if (unique.length > 3) {
+        throw new ServiceValidationError(
+          [{ path: 'lemmas', message: '干扰词最多 3 个' }],
+          '设置干扰词校验未通过',
+        );
+      }
+
+      await context.repos.words.setWordDistractors({
+        wordId: validated.wordId,
+        lemmas: unique,
+        deviceId: context.device.deviceId(),
+        now: context.clock.now(),
+      });
+
+      // 预热：把每个干扰词的 AI 相近释义提前算好/缓存好，学习卡组装时才不用现烧 LLM。
+      // 预热失败（LLM 未配置/离线）不影响保存——getDistractorPool 本身承诺不抛错，这里再兜一层。
+      if (contentPool !== null) {
+        for (const lemma of unique) {
+          try {
+            await contentPool.getDistractorPool({ lemma });
+          } catch (cause: unknown) {
+            context.log.warn(`预热干扰词释义失败：${lemma}`, cause);
+          }
+        }
+      }
+
+      return context.repos.words.listWordDistractors(validated.wordId);
+    },
+
+    async listWordDistractors(input: { wordId: string }): Promise<string[]> {
+      const validated = parseOrThrow(listWordDistractorsInputSchema, input, '查询干扰词');
+      const word = await requireWord(validated.wordId);
+      if (word.ownerScope !== ownerScope) {
+        throw new ServiceNotFoundError('word', validated.wordId);
+      }
+      return context.repos.words.listWordDistractors(validated.wordId);
     },
 
     async getFrequency(input: {

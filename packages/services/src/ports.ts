@@ -172,9 +172,19 @@ export interface LlmWordSense {
 }
 
 /**
+ * LLM 生成的相近干扰词（学习卡片选择题的干扰项来源之一）。
+ */
+export interface LlmDistractorWord {
+  /** 英文词形（不含目标词本身）。 */
+  readonly lemma: string;
+  /** 简明中文释义（`EN_TO_ZH` 选项文本的来源）。 */
+  readonly meaningZh: string;
+}
+
+/**
  * LLM 端口（外壳注入）。
  *
- * 用于「明确标 AI 生成」的能力：翻译、导入单词时的词典义项生成。
+ * 用于「明确标 AI 生成」的能力：翻译、导入单词时的词典义项生成、选择题的相近干扰词。
  * 未配置（未提供实现）时，服务层抛 `NotConfiguredError('llm')` 而不是静默降级。
  */
 export interface LlmPort {
@@ -186,6 +196,17 @@ export interface LlmPort {
    * @returns 义项列表；模型无法给出时抛错，由调用方决定跳过或重试。
    */
   defineWord(input: { lemma: string; phrase: boolean }): Promise<readonly LlmWordSense[]>;
+  /**
+   * 生成与目标词**拼写相近/读音相近/易混**的英文单词及其中文释义（R3）。
+   *
+   * @param input 目标词形与需要的数量。
+   * @returns 相近词列表；**绝不包含目标词本身**。模型无法给出时抛错，
+   *   由调用方决定降级（服务层会回退词库候选机制）。
+   */
+  generateDistractorWords(input: {
+    lemma: string;
+    count: number;
+  }): Promise<readonly LlmDistractorWord[]>;
 }
 
 /** 网络可达性端口（外壳注入，决定降级路径是否走在线）。 */

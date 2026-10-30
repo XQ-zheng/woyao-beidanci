@@ -20,8 +20,10 @@ import type { ContentCacheRepository } from '@woyao/data';
 
 import {
   contentWordInputSchema,
+  distractorPoolInputSchema,
   parseOrThrow,
   pronunciationInputSchema,
+  type DistractorWordView,
   type SenseView,
 } from './dto';
 import { ServiceNotFoundError } from './errors';
@@ -53,6 +55,14 @@ export interface AudioResult {
 export interface ContentService {
   getWordContent(input: { wordId: string }): Promise<WordContentResult>;
   getPronunciation(input: { wordId: string; accent: 'uk' | 'us' }): Promise<AudioResult>;
+  /**
+   * 取一个词形的 AI 相近干扰词池（R3）。
+   *
+   * content_cache 优先（key = `distractors:${词形小写}`，TTL 30 天）；
+   * 未命中才调 LLM。LLM 未配置或调用失败时返回 `[]`（**绝不抛错**——
+   * 干扰项只是锦上添花，学习卡不能因为 AI 不可用而组不出来）。
+   */
+  getDistractorPool(input: { lemma: string }): Promise<ReadonlyArray<DistractorWordView>>;
 }
 
 /** 构造参数。 */
@@ -68,6 +78,8 @@ export interface ContentServiceOptions {
 const DICTIONARY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 /** 发音 URL 缓存 TTL：7 天（音频地址很少变）。 */
 const AUDIO_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** AI 相近干扰词池缓存 TTL：30 天（同一词形的易混词几乎不变）。 */
+const DISTRACTOR_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 判断缓存是否“未过期”；`null` 表示永不过期。 */
 function isFresh(expiresAt: string | null, nowIso: string): boolean {
@@ -222,6 +234,57 @@ export function createContentService(options: ContentServiceOptions): ContentSer
       }
 
       return { wordId: word.id, accent, url, phoneticText };
+    },
+
+    async getDistractorPool(input: { lemma: string }): Promise<ReadonlyArray<DistractorWordView>> {
+      const { lemma } = parseOrThrow(distractorPoolInputSchema, input, '查询相近干扰词');
+      const cacheKey = `distractors:${lemma.toLowerCase()}`;
+      const now = context.clock.now();
+      const nowIso = toIsoInstant(now);
+
+      // 缓存命中且未过期 → 直接返回，绝不重复烧 LLM 额度。
+      const cached = await contentCache.get(cacheKey);
+      if (cached !== null && isFresh(cached.expiresAt, nowIso)) {
+        return cached.payload as DistractorWordView[];
+      }
+
+      // LLM 未配置：诚实地返回空池（调用方回退词库候选机制），不抛错。
+      const llm = context.llm;
+      if (llm === undefined) {
+        return [];
+      }
+
+      try {
+        const generated = await llm.generateDistractorWords({ lemma, count: 6 });
+        const pool: DistractorWordView[] = [];
+        const seen = new Set<string>([lemma.toLowerCase()]);
+        for (const item of generated) {
+          const candidateLemma = typeof item.lemma === 'string' ? item.lemma.trim() : '';
+          const meaningZh = typeof item.meaningZh === 'string' ? item.meaningZh.trim() : '';
+          // 防御性过滤：目标词本身与空词条一律剔除（绝不把题干词混进干扰项）。
+          if (candidateLemma === '' || meaningZh === '' || seen.has(candidateLemma.toLowerCase())) {
+            continue;
+          }
+          seen.add(candidateLemma.toLowerCase());
+          pool.push({ lemma: candidateLemma, meaningZh });
+        }
+        await contentCache.set({
+          cacheKey,
+          provider: 'llm',
+          payload: pool,
+          fetchedAt: nowIso,
+          expiresAt: toIsoInstant(addMilliseconds(now, DISTRACTOR_CACHE_TTL_MS)),
+          sourceId: null,
+        });
+        return pool;
+      } catch (cause: unknown) {
+        // LLM 失败（离线/额度/解析失败）：有过期缓存就用旧值兜底，否则返回空池。
+        context.log.warn(`AI 相近干扰词生成失败：${lemma}`, cause);
+        if (cached !== null) {
+          return cached.payload as DistractorWordView[];
+        }
+        return [];
+      }
     },
   };
 }

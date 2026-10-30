@@ -289,6 +289,54 @@ export interface WordRepository {
     deviceId: string;
     now: Date;
   }): WordSenseRecord | null;
+  /**
+   * 全量重建一个词条的义项（词库页「义项增删」用）。
+   *
+   * 传入数组**就是**重建后的全部义项，序号按数组顺序重排为 1..N：
+   * - 原义项中排在前 N 位的多条逐条 update（内容 + sense_no + revision + 1）；
+   * - 原义项多出来的（原序号 > N）soft delete（deleted_at = now，revision + 1）；
+   * - 原义项不足的新 insert（revision 从 0 开始）。
+   *
+   * 全部写操作在同一个事务里：重建到一半失败时整体回滚，绝不会出现
+   * 「旧义项删了、新义项没写进去」的中间态。contextText / sourceId 不在入参里，
+   * 保留的义项沿用各自原值（编辑释义不动例句与来源）。
+   *
+   * @returns 重建后的全部未删除义项（按 senseNo 升序）。
+   * @throws {InvalidRepositoryInputError} 词条不存在、senses 为空或含空简明释义时。
+   */
+  replaceWordSenses(input: {
+    wordId: string;
+    senses: ReadonlyArray<{
+      pos: string;
+      simpleZh: string;
+      detailedZh: string | null;
+    }>;
+    /**
+     * 新增义项使用的来源 id（`sources.id`）。
+     * 缺省沿用该词第一个未删除义项的来源；词条原本没有义项时必须显式提供。
+     */
+    sourceId?: string;
+    deviceId: string;
+    now: Date;
+  }): WordSenseRecord[];
+  /**
+   * 全量替换一个词条的自定义干扰词（R5）。
+   *
+   * 传入的词形列表就是保存后的完整列表：已存在且未删除的行原样保留（幂等，
+   * 重复保存不推 revision）；被移除的 soft delete；新词形 insert——若同一词形
+   * 曾被软删过，则复活该行（UNIQUE (word_id, distractor_lemma) 不允许再插一行，
+   * upsert 把 deleted_at 清空并 revision + 1）。词形按「去空白 + 小写」去重。
+   *
+   * @throws {InvalidRepositoryInputError} 词条不存在或词形为空时。
+   */
+  setWordDistractors(input: {
+    wordId: string;
+    lemmas: readonly string[];
+    deviceId: string;
+    now: Date;
+  }): void;
+  /** 列出一个词条的自定义干扰词形（按加入顺序；不含已软删的行）。 */
+  listWordDistractors(wordId: string): string[];
   upsertDeck(input: DeckInput): DeckRecord;
   getDeckById(id: string): DeckRecord | null;
   listDecks(ownerScope: string): DeckRecord[];
@@ -696,6 +744,47 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
       WHERE word_id = ? AND deleted_at IS NULL
       ORDER BY sense_no ASC, id ASC`,
   );
+  /** replaceWordSenses：把多余的义项软删除（原序号 > N 的行）。 */
+  const softDeleteSense = db.prepare(
+    `UPDATE word_senses
+        SET deleted_at = ?, updated_at = ?, device_id = ?, revision = revision + 1
+      WHERE id = ? AND deleted_at IS NULL`,
+  );
+  /** replaceWordSenses：重建保留的义项（内容 + sense_no 重排 + revision + 1）。 */
+  const replaceSense = db.prepare(
+    `UPDATE word_senses
+        SET sense_no = ?, pos = ?, simple_zh = ?, detailed_zh = ?,
+            updated_at = ?, device_id = ?, revision = revision + 1
+      WHERE id = ?`,
+  );
+  /** word_distractors：按加入顺序读一个词条的未删除干扰词（rowid=插入顺序；created_at 同秒会并列）。 */
+  const selectDistractors = db.prepare(
+    `SELECT id, distractor_lemma FROM word_distractors
+      WHERE word_id = ? AND deleted_at IS NULL
+      ORDER BY rowid ASC`,
+  );
+  /**
+   * word_distractors：新增或复活一个干扰词。
+   *
+   * UNIQUE (word_id, distractor_lemma) 不带 `WHERE deleted_at IS NULL`（普通唯一约束），
+   * 所以「删掉再重新加同一个词」必须走 upsert 复活旧行，而不是再插一行。
+   */
+  const upsertDistractor = db.prepare(
+    `INSERT INTO word_distractors
+       (id, word_id, distractor_lemma, created_at, updated_at, deleted_at, device_id, revision)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, 0)
+     ON CONFLICT (word_id, distractor_lemma) DO UPDATE SET
+       updated_at = excluded.updated_at,
+       deleted_at = NULL,
+       device_id = excluded.device_id,
+       revision = word_distractors.revision + 1`,
+  );
+  /** word_distractors：把被移除的干扰词软删除。 */
+  const softDeleteDistractor = db.prepare(
+    `UPDATE word_distractors
+        SET deleted_at = ?, updated_at = ?, device_id = ?, revision = revision + 1
+      WHERE id = ? AND deleted_at IS NULL`,
+  );
   const DECK_COLUMNS = `id, owner_scope, name, kind, source_id, created_at, updated_at, deleted_at,
                         device_id, revision`;
   const selectDeckById = db.prepare(`SELECT ${DECK_COLUMNS} FROM decks WHERE id = ?`);
@@ -997,6 +1086,161 @@ export function createWordRepository(db: SqliteDatabase): WordRepository {
           sourceIdRow.source_id,
         ) as WordSenseRow | undefined;
       return updated === undefined ? null : toSenseRecord(updated);
+    },
+
+    replaceWordSenses(input: {
+      wordId: string;
+      senses: ReadonlyArray<{ pos: string; simpleZh: string; detailedZh: string | null }>;
+      sourceId?: string;
+      deviceId: string;
+      now: Date;
+    }): WordSenseRecord[] {
+      const wordId = requireNonEmptyString(input.wordId, 'wordId');
+      const device = requireNonEmptyString(input.deviceId, 'deviceId');
+      const nowIso = toIsoInstant(input.now);
+      const senses: readonly { pos: string; simpleZh: string; detailedZh: string | null }[] =
+        Array.isArray(input.senses) ? input.senses : [];
+      if (senses.length === 0) {
+        throw new InvalidRepositoryInputError('senses', '至少需要一条义项（词必须至少有一个释义）');
+      }
+      for (const sense of senses) {
+        if (sense === null || typeof sense !== 'object') {
+          throw new InvalidRepositoryInputError('senses', '义项不能为空');
+        }
+        if (typeof sense.simpleZh !== 'string' || sense.simpleZh.trim() === '') {
+          throw new InvalidRepositoryInputError('senses.simpleZh', '简明释义必须是非空字符串');
+        }
+      }
+
+      return runInTransaction(
+        db,
+        () => {
+          const wordRow = selectWordById.get(wordId) as WordRow | undefined;
+          if (wordRow === undefined || wordRow.deleted_at !== null) {
+            throw new InvalidRepositoryInputError('wordId', `词条不存在（id=${wordId}）`);
+          }
+          const alive = selectSenses.all(wordId) as WordSenseRow[];
+
+          // 第一步：先软删除多余的义项（原序号 > N 的行），把幸存集合收敛到前 N 行，
+          // 这样后面的序号重排不会与「尚未处理的行」撞 (word_id, sense_no, source) 唯一索引。
+          for (const row of alive.slice(senses.length)) {
+            softDeleteSense.run(nowIso, nowIso, device, row.id);
+          }
+
+          // 第二步：按数组顺序重建 1..N。已经幸存的行逐条 update；不足的新 insert。
+          // 更新按序号升序推进：处理第 i 行时，1..i 这些序号要么已被前面的行让出，
+          // 要么就是它自己当前的序号，因此不会撞唯一索引（详见接口注释）。
+          for (const [index, sense] of senses.entries()) {
+            const row = alive[index];
+            if (row !== undefined) {
+              replaceSense.run(
+                index + 1,
+                sense.pos ?? '',
+                sense.simpleZh.trim(),
+                sense.detailedZh ?? null,
+                nowIso,
+                device,
+                row.id,
+              );
+              continue;
+            }
+            // 新增义项的来源：显式传入优先，否则沿用该词第一个未删除义项的来源。
+            // 词条原本没有任何义项时必须显式提供（来源外键不允许空挂）。
+            const sourceId = input.sourceId ?? alive[0]?.source_id ?? null;
+            if (sourceId === null || sourceId === '') {
+              throw new InvalidRepositoryInputError(
+                'sourceId',
+                `词条 ${wordId} 没有既有义项，必须显式提供 sourceId`,
+              );
+            }
+            insertSense.run(
+              newId(),
+              wordId,
+              index + 1,
+              sense.pos ?? '',
+              sense.simpleZh.trim(),
+              sense.detailedZh ?? null,
+              null,
+              sourceId,
+              nowIso,
+              nowIso,
+              device,
+            );
+          }
+
+          return (selectSenses.all(wordId) as WordSenseRow[]).map(toSenseRecord);
+        },
+        { mode: 'IMMEDIATE' },
+      );
+    },
+
+    setWordDistractors(input: {
+      wordId: string;
+      lemmas: readonly string[];
+      deviceId: string;
+      now: Date;
+    }): void {
+      const wordId = requireNonEmptyString(input.wordId, 'wordId');
+      const device = requireNonEmptyString(input.deviceId, 'deviceId');
+      const nowIso = toIsoInstant(input.now);
+      if (!Array.isArray(input.lemmas)) {
+        throw new InvalidRepositoryInputError('lemmas', 'lemmas 必须是字符串数组');
+      }
+      // 入参去重（去空白 + 小写），保留首次出现的原词形与顺序。
+      const desired: string[] = [];
+      const seen = new Set<string>();
+      for (const lemma of input.lemmas) {
+        if (typeof lemma !== 'string' || lemma.trim() === '') {
+          throw new InvalidRepositoryInputError('lemmas', '干扰词形必须是非空字符串');
+        }
+        const key = normalizeLemma(lemma);
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        desired.push(lemma.trim());
+      }
+
+      runInTransaction(
+        db,
+        () => {
+          const wordRow = selectWordById.get(wordId) as WordRow | undefined;
+          if (wordRow === undefined || wordRow.deleted_at !== null) {
+            throw new InvalidRepositoryInputError('wordId', `词条不存在（id=${wordId}）`);
+          }
+          const rows = selectDistractors.all(wordId) as {
+            id: string;
+            distractor_lemma: string;
+          }[];
+
+          // 已存在且仍需要的词形保持原样（幂等：重复保存不推 revision、不改 updated_at）；
+          // 其余软删除。
+          const aliveKeys = new Set<string>();
+          for (const row of rows) {
+            const key = normalizeLemma(row.distractor_lemma);
+            if (seen.has(key)) {
+              aliveKeys.add(key);
+              continue;
+            }
+            softDeleteDistractor.run(nowIso, nowIso, device, row.id);
+          }
+
+          // 新词形 upsert：若该词形曾被软删过，UNIQUE 约束下走复活（deleted_at 清空）。
+          for (const lemma of desired) {
+            if (aliveKeys.has(normalizeLemma(lemma))) {
+              continue;
+            }
+            upsertDistractor.run(newId(), wordId, lemma, nowIso, nowIso, device);
+          }
+        },
+        { mode: 'IMMEDIATE' },
+      );
+    },
+
+    listWordDistractors(wordId: string): string[] {
+      requireNonEmptyString(wordId, 'wordId');
+      const rows = selectDistractors.all(wordId) as { distractor_lemma: string }[];
+      return rows.map((row) => row.distractor_lemma);
     },
 
     upsertDeck(input: DeckInput): DeckRecord {

@@ -76,7 +76,7 @@ afterEach(() => {
 });
 
 describe('migrate：建表与幂等', () => {
-  it('创建全部领域表与同步表（17 张，含 schema_migrations）', () => {
+  it('创建全部领域表与同步表（18 张，含 schema_migrations 与 003 的 word_distractors）', () => {
     const db = createMigratedDatabase();
 
     const rows = db
@@ -103,11 +103,12 @@ describe('migrate：建表与幂等', () => {
         'sync_conflicts',
         'sync_outbox',
         'sync_state',
+        'word_distractors',
         'word_senses',
         'words',
       ].sort(),
     );
-    expect(tables).toHaveLength(17);
+    expect(tables).toHaveLength(18);
   });
 
   it('关键查询都有索引（否则热路径会退化成全表扫）', () => {
@@ -127,20 +128,20 @@ describe('migrate：建表与幂等', () => {
     );
   });
 
-  it('两次 migrate 是幂等的：版本表只有 001/002，applied_at 不被覆盖', () => {
+  it('两次 migrate 是幂等的：版本表含 001/002/003，applied_at 不被覆盖', () => {
     const db = createMigratedDatabase();
     const before = db
       .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version')
       .all() as { version: string; applied_at: string }[];
 
     expect(() => migrate(db)).not.toThrow();
-    expect(listAppliedMigrations(db)).toEqual(['001', '002']);
+    expect(listAppliedMigrations(db)).toEqual(['001', '002', '003']);
 
     const after = db
       .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version')
       .all() as { version: string; applied_at: string }[];
     expect(after).toEqual(before);
-    expect(after).toHaveLength(2);
+    expect(after).toHaveLength(3);
   });
 
   it('applied_at 是 UTC ISO-8601 毫秒字符串（由 SQLite 生成，不用 new Date()）', () => {

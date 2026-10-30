@@ -14,6 +14,7 @@
 import initSql from './001_init.sql?raw';
 import syncSql from './002_sync.sql?raw';
 import wordDistractorsSql from './003_word_distractors.sql?raw';
+import learningEventStyleSql from './004_learning_event_style.sql?raw';
 
 /** 一条迁移：版本号 + 便于排障的名称 + 内联 SQL 文本。 */
 export interface MigrationDefinition {
@@ -35,4 +36,5 @@ export const MIGRATIONS: readonly MigrationDefinition[] = [
   { version: '001', name: 'init', sql: initSql },
   { version: '002', name: 'sync', sql: syncSql },
   { version: '003', name: 'word_distractors', sql: wordDistractorsSql },
+  { version: '004', name: 'learning_event_style', sql: learningEventStyleSql },
 ];

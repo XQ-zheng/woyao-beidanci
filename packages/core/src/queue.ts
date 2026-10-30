@@ -208,8 +208,13 @@ export function buildDailyQueue(
   plan: ReviewPlan,
   now: Date,
   seed: string,
+  options: { rotation?: 'SEQUENTIAL' | 'RANDOM' } = {},
 ): DailyQueue {
   assertValidReviewPlan(plan);
+  // 随机轮换：新词池按种子确定性洗牌（同一天同一词库重开会话顺序一致）；
+  // 默认 SEQUENTIAL 保持词库顺序（用户可感知的「按顺序背」）。
+  const unseenOrder: readonly string[] =
+    options.rotation === 'RANDOM' ? seededShuffle(unseenWordIds, 'rotation:' + seed) : unseenWordIds;
 
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
     throw new RangeError('buildDailyQueue 需要有效的 now 时刻');
@@ -275,7 +280,7 @@ export function buildDailyQueue(
   // 新词池：未学习过的词（保持词库顺序）→ 其次是“已建状态但从未作答”的词（保持传入顺序）。
   const newWordIds: string[] = [];
   const queuedNewWordIds = new Set<string>();
-  for (const wordId of unseenWordIds) {
+  for (const wordId of unseenOrder) {
     if (newWordIds.length >= plan.dailyNewLimit) {
       break;
     }

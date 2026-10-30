@@ -76,6 +76,8 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
   const [starting, setStarting] = useState(false);
   /** 「今日已背完，是否重新开始」确认框。 */
   const [relearnOpen, setRelearnOpen] = useState(false);
+  /** 触发确认框时用户点的范围（重开时沿用，保证「背新词」重开还是背新词）。 */
+  const [relearnScope, setRelearnScope] = useState<'ALL' | 'NEW' | 'REVIEW'>('ALL');
   /** 确认重学后正在重开会话。 */
   const [relearning, setRelearning] = useState(false);
 
@@ -162,7 +164,7 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
   const accuracy =
     data.today === null || data.today.total === 0 ? null : Math.round(data.today.accuracy * 100);
 
-  async function start(): Promise<void> {
+  async function start(scope: 'ALL' | 'NEW' | 'REVIEW' = 'ALL'): Promise<void> {
     if (starting || services === null || selectedDeck === undefined) {
       return;
     }
@@ -171,6 +173,7 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
     try {
       const session: SessionView = await services.study.startSession({
         deckId: selectedDeck.deckId,
+        scope,
         now: nowRef.current(),
       });
       if (session.cards.length === 0) {
@@ -181,6 +184,7 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
           // 收尾失败不改变“今天没有待学词”的结论。
         }
         // 用户要求：弹确认框询问是否重新开始（重开的一轮记录也保留），而不是只给一句提示。
+        setRelearnScope(scope);
         setRelearnOpen(true);
         return;
       }
@@ -242,11 +246,19 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
           <Button
             variant="contained"
-            onClick={() => void start()}
+            onClick={() => void start('NEW')}
             disabled={starting}
             sx={{ minHeight: 44 }}
           >
-            {starting ? '正在准备…' : '开始学习'}
+            {starting ? '正在准备…' : '开始背新词'}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => void start('REVIEW')}
+            disabled={starting}
+            sx={{ minHeight: 44 }}
+          >
+            {starting ? '正在准备…' : '开始复习'}
           </Button>
           <Button variant="outlined" onClick={() => navigate('/library')}>
             管理词库
@@ -281,6 +293,7 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
                 const session: SessionView = await services.study.startSession({
                   deckId: selectedDeck.deckId,
                   force: true,
+                  scope: relearnScope,
                   now: nowRef.current(),
                 });
                 setRelearnOpen(false);

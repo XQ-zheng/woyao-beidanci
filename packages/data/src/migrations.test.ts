@@ -128,20 +128,20 @@ describe('migrate：建表与幂等', () => {
     );
   });
 
-  it('两次 migrate 是幂等的：版本表含 001/002/003，applied_at 不被覆盖', () => {
+  it('两次 migrate 是幂等的：版本表含 001/002/003/004，applied_at 不被覆盖', () => {
     const db = createMigratedDatabase();
     const before = db
       .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version')
       .all() as { version: string; applied_at: string }[];
 
     expect(() => migrate(db)).not.toThrow();
-    expect(listAppliedMigrations(db)).toEqual(['001', '002', '003']);
+    expect(listAppliedMigrations(db)).toEqual(['001', '002', '003', '004']);
 
     const after = db
       .prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version')
       .all() as { version: string; applied_at: string }[];
     expect(after).toEqual(before);
-    expect(after).toHaveLength(3);
+    expect(after).toHaveLength(4);
   });
 
   it('applied_at 是 UTC ISO-8601 毫秒字符串（由 SQLite 生成，不用 new Date()）', () => {

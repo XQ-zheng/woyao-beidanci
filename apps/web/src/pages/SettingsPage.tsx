@@ -24,7 +24,7 @@ import type { TrainingMode } from '@woyao/core';
 import { useServiceData } from '../hooks/useServiceData';
 import DataLocationSection from '../components/DataLocationSection';
 import { applyFontScale } from '../lib/fontScale';
-import { questionStyleLabel, trainingModeLabel } from '../lib/labels';
+import { questionStyleLabel, rotationOrderLabel, trainingModeLabel } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
 import { PageShell } from './PageShell';
 
@@ -278,10 +278,12 @@ export default function SettingsPage(): ReactElement {
             size="small"
             label="题型"
             value={draft.questionStyle}
-            onChange={(event) => update('questionStyle', event.target.value as 'CHOICE' | 'REVEAL')}
+            onChange={(event) =>
+              update('questionStyle', event.target.value as 'CHOICE' | 'REVEAL' | 'MIXED')
+            }
             sx={{ maxWidth: 240 }}
           >
-            {(['CHOICE', 'REVEAL'] as const).map((style) => (
+            {(['CHOICE', 'REVEAL', 'MIXED'] as const).map((style) => (
               <MenuItem key={style} value={style}>
                 {questionStyleLabel(style)}
               </MenuItem>
@@ -297,6 +299,23 @@ export default function SettingsPage(): ReactElement {
           >
             <MenuItem value="uk">英音</MenuItem>
             <MenuItem value="us">美音</MenuItem>
+          </TextField>
+          <TextField
+            select
+            size="small"
+            label="背词轮换顺序"
+            value={draft.rotationOrder}
+            onChange={(event) =>
+              update('rotationOrder', event.target.value as 'SEQUENTIAL' | 'RANDOM')
+            }
+            helperText="按顺序：按词库中单词的加入顺序；随机：每天打乱一次（同一天内顺序固定）。"
+            sx={{ maxWidth: 320 }}
+          >
+            {(['SEQUENTIAL', 'RANDOM'] as const).map((order) => (
+              <MenuItem key={order} value={order}>
+                {rotationOrderLabel(order)}
+              </MenuItem>
+            ))}
           </TextField>
         </Box>
 

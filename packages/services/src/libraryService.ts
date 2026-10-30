@@ -48,6 +48,9 @@ import type { ImportWordsResult } from './importService';
 import type { ServiceContext } from './ports';
 import { ensureUserSource as ensureLocalUserSource } from './sourceBootstrap';
 
+/** 掌握判定的答对次数阈值（选择题与自评各答对这么多次才算「已掌握」）。 */
+const MASTERY_CORRECT_THRESHOLD = 2;
+
 /** 词库服务契约。 */
 export interface LibraryService {
   /** 列出当前归属范围内的词库（含种类与词数）。 */
@@ -349,6 +352,26 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
       const sensesPerWord = await Promise.all(
         words.map((word) => context.repos.words.listSenses(word.id)),
       );
+      // 掌握度：按词 × 题型统计答对次数（一次聚合查询，不用 N+1）。
+      // 规则（用户需求 R8）：选择题、自评、混合三种题型各答对 ≥2 次才算「已掌握」。
+      const styleCounts = await context.repos.learning.countCorrectByStyle(validated.deckId);
+      const masteryByWord = new Map<
+        string,
+        { choiceCorrect: number; selfCorrect: number; mixedCorrect: number }
+      >();
+      for (const row of styleCounts) {
+        const current = masteryByWord.get(row.wordId) ?? {
+          choiceCorrect: 0,
+          selfCorrect: 0,
+          mixedCorrect: 0,
+        };
+        if (row.style === 'CHOICE') {
+          current.choiceCorrect += row.correctCount;
+        } else {
+          current.selfCorrect += row.correctCount;
+        }
+        masteryByWord.set(row.wordId, current);
+      }
       return words.map((word, index) => ({
         wordId: word.id,
         lemma: word.lemma,
@@ -362,6 +385,19 @@ export function createLibraryService(options: LibraryServiceOptions): LibrarySer
           contextText: sense.contextText,
         })),
         frequency: toFrequencyView(lookup, word.id),
+        mastery: (() => {
+          const counts = masteryByWord.get(word.id) ?? {
+            choiceCorrect: 0,
+            selfCorrect: 0,
+            mixedCorrect: 0,
+          };
+          return {
+            ...counts,
+            mastered:
+              counts.choiceCorrect >= MASTERY_CORRECT_THRESHOLD &&
+              counts.selfCorrect >= MASTERY_CORRECT_THRESHOLD,
+          };
+        })(),
       }));
     },
 

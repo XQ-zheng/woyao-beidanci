@@ -41,6 +41,7 @@ export function questionStyleLabel(style: string): string {
   const labels: Readonly<Record<string, string>> = {
     CHOICE: '选择题',
     REVEAL: '自评回忆',
+    MIXED: '选择题与自评混合',
   };
   return labels[style] ?? style;
 }
@@ -91,4 +92,13 @@ export function formatLocalDateTime(iso: string, timeZone: string): string {
     minute: '2-digit',
     hour12: false,
   }).format(date);
+}
+
+/** 学习轮换顺序。 */
+export function rotationOrderLabel(order: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    SEQUENTIAL: '按顺序轮换',
+    RANDOM: '随机轮换',
+  };
+  return labels[order] ?? order;
 }

@@ -64,7 +64,9 @@ export interface SettingsSnapshot {
   intervalsDays: number[];
   timeZone: string;
   trainingMode: TrainingMode;
-  questionStyle: 'CHOICE' | 'REVEAL';
+  questionStyle: 'CHOICE' | 'REVEAL' | 'MIXED';
+  /** 学习轮换顺序：按顺序（词库顺序）或随机（种子确定性洗牌）。 */
+  rotationOrder: 'SEQUENTIAL' | 'RANDOM';
   accent: 'uk' | 'us';
   volume: number;
   fontScale: number;
@@ -204,6 +206,13 @@ export interface DistractorWordView {
 
 /** 词库内的一个词（含义项与词频）。 */
 export interface DeckWordView {
+  /** 掌握度统计（按题型答对次数；混合题型下三题型各 ≥2 次才算已掌握）。 */
+  mastery?: {
+    readonly choiceCorrect: number;
+    readonly selfCorrect: number;
+    readonly mixedCorrect: number;
+    readonly mastered: boolean;
+  };
   readonly wordId: string;
   readonly lemma: string;
   readonly phoneticUk: string | null;
@@ -322,7 +331,9 @@ export const localDateSchema = z.string().regex(LOCAL_DATE_PATTERN, '必须是�
 export const trainingModeSchema = z.enum(['EN_TO_ZH', 'ZH_TO_EN', 'MIXED']);
 
 /** 题型。 */
-export const questionStyleSchema = z.enum(['CHOICE', 'REVEAL']);
+export const questionStyleSchema = z.enum(['CHOICE', 'REVEAL', 'MIXED']);
+/** 轮换顺序取值。 */
+export const rotationOrderSchema = z.enum(['SEQUENTIAL', 'RANDOM']);
 
 /** 发音口音。 */
 export const accentSchema = z.enum(['uk', 'us']);
@@ -348,6 +359,7 @@ export const settingsPatchSchema = z.strictObject({
   timeZone: z.string().min(1, '必须填写计划时区').optional(),
   trainingMode: trainingModeSchema.optional(),
   questionStyle: questionStyleSchema.optional(),
+  rotationOrder: rotationOrderSchema.optional(),
   accent: accentSchema.optional(),
   volume: z
     .number()
@@ -446,6 +458,8 @@ export const startSessionInputSchema = z.strictObject({
    * 两次会话的学习记录**都会保留**——会话与事件本来就按次独立记录。
    */
   force: z.boolean().optional(),
+  /** 学习范围：ALL（默认）/ NEW（只背新词）/ REVIEW（只复习）。 */
+  scope: z.enum(['ALL', 'NEW', 'REVIEW']).optional(),
 });
 
 /** 提交作答入参。 */

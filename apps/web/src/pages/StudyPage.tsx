@@ -261,15 +261,21 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
   const progress = `第 ${index + 1} / ${totalCards} 题`;
 
   /**
-   * “认识/不认识”是 recognition 的唯一来源；isCorrect 按自报口径计算
-   * （REVEAL 式自评：自报认识即答对）。提交后反馈区展示完整释义。
+   * 统一提交入口：REVEAL 由「认识/不认识」自报（自报认识即答对）；
+   * CHOICE 由点选选项判定（选中正确答案才算答对，仍以用户点选为唯一作答事实）。
+   * 题型随事件落库，供混合模式按题型统计掌握度。
    */
-  async function submit(recognition: 'KNOWN' | 'UNKNOWN'): Promise<void> {
+  async function submit(input: {
+    recognition: 'KNOWN' | 'UNKNOWN';
+    answer: string;
+    isCorrect: boolean;
+    style: 'CHOICE' | 'REVEAL';
+  }): Promise<void> {
     if (submitLock.current) {
       return;
     }
     submitLock.current = true;
-    const isCorrect = recognition === 'KNOWN';
+    const { recognition, answer, isCorrect, style } = input;
     const answeredAt = nowRef.current();
     setSubmitting(true);
     setSubmitError(null);
@@ -280,9 +286,10 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
         wordId: card.wordId,
         mode: card.mode,
         prompt: card.prompt,
-        answer: '',
+        answer,
         isCorrect,
         recognition,
+        style,
         answeredAt,
         durationMs: answeredAt.getTime() - cardShownAt,
       });
@@ -383,35 +390,71 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
         </Box>
       </Box>
 
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: 3,
-          width: '100%',
-          maxWidth: 720,
-        }}
-      >
-        <Button
-          variant="contained"
-          color="success"
-          onClick={() => void submit('KNOWN')}
-          disabled={submitting}
-          aria-label="认识"
-          sx={{ minHeight: 96, fontSize: 22, fontWeight: 700 }}
+      {card.style === 'CHOICE' ? (
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+            gap: 2,
+            width: '100%',
+            maxWidth: 720,
+          }}
+          aria-label="选项区"
         >
-          认识
-        </Button>
-        <Button
-          variant="outlined"
-          onClick={() => void submit('UNKNOWN')}
-          disabled={submitting}
-          aria-label="不认识"
-          sx={{ minHeight: 96, fontSize: 22, fontWeight: 700, borderWidth: 2 }}
+          {card.options.map((option) => (
+            <Button
+              key={option}
+              variant="outlined"
+              onClick={() =>
+                void submit({
+                  recognition: option === card.answer ? 'KNOWN' : 'UNKNOWN',
+                  answer: option,
+                  isCorrect: option === card.answer,
+                  style: 'CHOICE',
+                })
+              }
+              disabled={submitting}
+              sx={{ minHeight: 76, fontSize: 18, borderWidth: 2, textTransform: 'none' }}
+            >
+              {option}
+            </Button>
+          ))}
+        </Box>
+      ) : (
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 3,
+            width: '100%',
+            maxWidth: 720,
+          }}
         >
-          不认识
-        </Button>
-      </Box>
+          <Button
+            variant="contained"
+            color="success"
+            onClick={() =>
+              void submit({ recognition: 'KNOWN', answer: '', isCorrect: true, style: 'REVEAL' })
+            }
+            disabled={submitting}
+            aria-label="认识"
+            sx={{ minHeight: 96, fontSize: 22, fontWeight: 700 }}
+          >
+            认识
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() =>
+              void submit({ recognition: 'UNKNOWN', answer: '', isCorrect: false, style: 'REVEAL' })
+            }
+            disabled={submitting}
+            aria-label="不认识"
+            sx={{ minHeight: 96, fontSize: 22, fontWeight: 700, borderWidth: 2 }}
+          >
+            不认识
+          </Button>
+        </Box>
+      )}
 
       {submitError !== null ? <Alert severity="error">{submitError}</Alert> : null}
 

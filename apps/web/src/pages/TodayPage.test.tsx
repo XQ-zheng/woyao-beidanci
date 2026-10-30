@@ -39,7 +39,7 @@ describe('TodayPage：今日概览', () => {
     expect(await screen.findByText('2026-10-27')).toBeInTheDocument();
     expect(screen.getByText('新词上限 20 个 · 复习上限 100 个')).toBeInTheDocument();
     expect(screen.getByText('已作答 10 次 · 正确率 80%')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '开始学习' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '开始背新词' })).toBeInTheDocument();
   });
 
   it('今日没有任何作答时只显示已作答 0 次，不编造正确率', async () => {
@@ -68,7 +68,7 @@ describe('TodayPage：进入学习', () => {
     const services = createFakeServices({ study: { startSession } });
     renderToday(services);
 
-    fireEvent.click(await screen.findByRole('button', { name: '开始学习' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始背新词' }));
 
     await waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
     expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ deckId: 'deck-cet4' }));
@@ -82,7 +82,7 @@ describe('TodayPage：进入学习', () => {
     });
     renderToday(services);
 
-    fireEvent.click(await screen.findByRole('button', { name: '开始学习' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始背新词' }));
 
     expect(await screen.findByText(/今天已经背诵完毕/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重新开始学习' })).toBeInTheDocument();
@@ -118,6 +118,6 @@ describe('TodayPage：空态', () => {
     renderToday(null);
 
     expect(screen.getByText('数据服务未接入')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '开始学习' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '开始背新词' })).toBeNull();
   });
 });

@@ -90,6 +90,7 @@ function seedEvent(harness: ServiceTestHarness, eventId: string, localDate: stri
     answer: 'x',
     isCorrect: false,
     recognition: 'UNKNOWN',
+    questionStyle: 'REVEAL',
     stageBefore: 0,
     stageAfter: 0,
     dueAt: null,

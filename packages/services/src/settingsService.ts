@@ -37,6 +37,7 @@ import {
   studyWindowInputSchema,
   trainingModeSchema,
   questionStyleSchema,
+  rotationOrderSchema,
   accentSchema,
   type SettingsPatch,
   type SettingsSnapshot,
@@ -59,6 +60,7 @@ const SETTING_KEYS = {
   timeZone: 'plan.timeZone',
   trainingMode: 'study.trainingMode',
   questionStyle: 'study.questionStyle',
+  rotationOrder: 'study.rotationOrder',
   accent: 'audio.accent',
   volume: 'audio.volume',
   fontScale: 'ui.fontScale',
@@ -204,6 +206,7 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
       timeZone: readStored(stored, SETTING_KEYS.timeZone, storedStringSchema, defaultTimeZone),
       trainingMode: readStored(stored, SETTING_KEYS.trainingMode, trainingModeSchema, 'EN_TO_ZH'),
       questionStyle: readStored(stored, SETTING_KEYS.questionStyle, questionStyleSchema, 'CHOICE'),
+      rotationOrder: readStored(stored, SETTING_KEYS.rotationOrder, rotationOrderSchema, 'SEQUENTIAL'),
       accent: readStored(stored, SETTING_KEYS.accent, accentSchema, 'uk'),
       volume: readStored(stored, SETTING_KEYS.volume, storedVolumeSchema, 1),
       fontScale: readStored(stored, SETTING_KEYS.fontScale, storedFontScaleSchema, 1),
@@ -240,6 +243,7 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
         timeZone: validated.timeZone ?? current.timeZone,
         trainingMode: validated.trainingMode ?? current.trainingMode,
         questionStyle: validated.questionStyle ?? current.questionStyle,
+        rotationOrder: validated.rotationOrder ?? current.rotationOrder,
         accent: validated.accent ?? current.accent,
         volume: validated.volume ?? current.volume,
         fontScale: validated.fontScale ?? current.fontScale,
@@ -281,6 +285,11 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
       if (validated.questionStyle !== undefined) {
         writes.push(
           context.repos.settings.set(SETTING_KEYS.questionStyle, JSON.stringify(next.questionStyle), deviceId, now),
+        );
+      }
+      if (validated.rotationOrder !== undefined) {
+        writes.push(
+          context.repos.settings.set(SETTING_KEYS.rotationOrder, JSON.stringify(next.rotationOrder), deviceId, now),
         );
       }
       if (validated.accent !== undefined) {

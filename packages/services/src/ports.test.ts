@@ -19,6 +19,7 @@ function makeEvent(overrides: Partial<LearningEventRecord> = {}): LearningEventR
     answer: '放弃',
     isCorrect: true,
     recognition: 'KNOWN',
+    questionStyle: 'REVEAL',
     stageBefore: -1,
     stageAfter: 0,
     dueAt: null,

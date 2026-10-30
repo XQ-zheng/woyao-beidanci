@@ -189,9 +189,16 @@ export interface SessionSummary {
 /** 学习服务契约。 */
 export interface StudyService {
   /** 开始（或重建）今天的学习会话。 */
-  startSession(input: { deckId: string; now: Date; seed?: string; force?: boolean }): Promise<SessionView>;
+  startSession(input: {
+    deckId: string;
+    now: Date;
+    seed?: string;
+    force?: boolean;
+    /** 学习范围：ALL（默认，新词+复习）/ NEW（只背新词）/ REVIEW（只复习）。 */
+    scope?: 'ALL' | 'NEW' | 'REVIEW';
+  }): Promise<SessionView>;
   /** 提交一次作答。 */
-  submitAnswer(input: SubmitAnswerInput): Promise<AnswerResult>;
+  submitAnswer(input: SubmitAnswerInput & { style?: 'CHOICE' | 'REVEAL' }): Promise<AnswerResult>;
   /** 结束会话并写回汇总（中断的会话也能结束）。 */
   finishSession(input: { sessionId: string; now: Date }): Promise<SessionSummary>;
   /** 把某个词设为“不再出现”。 */
@@ -448,11 +455,13 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
     state: LearningState | undefined;
     favoriteWordIds: ReadonlySet<string>;
     trainingMode: TrainingMode;
-    questionStyle: 'CHOICE' | 'REVEAL';
+    questionStyle: 'CHOICE' | 'REVEAL' | 'MIXED';
     seed: string;
     frequencyLookup: Awaited<ReturnType<typeof loadFrequencyLookup>> | null;
     /** 词库候选池加载器（REVEAL 不需要；CHOICE 里也只在 AI/自定义席位不足时才真正加载）。 */
     loadCandidates: () => Promise<readonly WordWithSenses[]>;
+    /** 卡片在本次会话中的位置（从 0 开始）；混合题型按位置奇偶交替。 */
+    position?: number;
   }): Promise<CardView | null> {
     const word = await context.repos.words.getWordById(input.wordId);
     if (word === null) {
@@ -464,6 +473,16 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
     // `MIXED` 在这里解析成具体方向：卡片必须明确“问的是英译中还是中译英”，
     // 同一 (seed, wordId) 永远得到同一方向，因此重开会话也能复现同一套题。
     const mode = resolveDistractorMode(input.trainingMode, input.seed, word.id);
+    // 混合题型：同一 (seed, wordId) 恒得同一种具体题型（选择题 / 自评），
+    // 会话里两种题型交替出现；重开会话能复现同一套题。
+    // 混合题型：按卡片位置奇偶交替，保证一次会话里选择题与自评都出现
+    // （纯靠 hash 会有概率整场都是同一种题型）。
+    const style: 'CHOICE' | 'REVEAL' =
+      input.questionStyle === 'MIXED'
+        ? (input.position ?? 0) % 2 === 0
+          ? 'CHOICE'
+          : 'REVEAL'
+        : input.questionStyle;
 
     // R2 修 bug：EN_TO_ZH 不再固定考义项 1，而是在全部非空义项里按 (seed, wordId)
     // 确定性挑一个；ZH_TO_EN 的答案仍是词形，不受影响。
@@ -489,7 +508,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
 
     let options: string[] = [];
     let distractorWords: ReadonlyArray<DistractorEntry> = [];
-    if (input.questionStyle === 'CHOICE') {
+    if (style === 'CHOICE') {
       const entries: DistractorEntry[] = [];
       const usedKeys = new Set<string>([normalizeOptionKey(answer)]);
       /** 占一个干扰席：文本为空或与已选项重复时放弃（绝不编造、正确答案绝不重复出现）。 */
@@ -593,7 +612,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       phoneticUk: word.phoneticUk,
       phoneticUs: word.phoneticUs,
       mode,
-      style: input.questionStyle,
+      style,
       prompt,
       answer,
       options,
@@ -622,10 +641,24 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
   }
 
   return {
-    async startSession(input: { deckId: string; now: Date; seed?: string; force?: boolean }): Promise<SessionView> {
+    async startSession(input: {
+      deckId: string;
+      now: Date;
+      seed?: string;
+      force?: boolean;
+      scope?: 'ALL' | 'NEW' | 'REVIEW';
+    }): Promise<SessionView> {
       const validated = parseOrThrow(startSessionInputSchema, input, '开始学习');
-      const plan = await settings.loadReviewPlan();
+      const basePlan = await settings.loadReviewPlan();
       const snapshot = await settings.getSnapshot();
+      // 用户把「开始学习」拆成「开始背新词 / 开始复习」：用 scope 把另一类上限清零，
+      // 队列由 core 按上限截断，天然只出一种卡；force（今日已背完重学）不受 scope 限制。
+      const plan =
+        validated.scope === 'NEW'
+          ? { ...basePlan, dailyReviewLimit: 0 }
+          : validated.scope === 'REVIEW'
+            ? { ...basePlan, dailyNewLimit: 0 }
+            : basePlan;
 
       const deck = await context.repos.words.getDeckById(validated.deckId);
       if (deck === null) {
@@ -658,8 +691,12 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       // `newCount`/`reviewCount` 在卡片组装之前就已确定（取队列长度），不受后续组装/重排影响。
       const queue =
         validated.force === true
-          ? buildDailyQueue([], unseenWordIds, { ...plan, dailyNewLimit: 500 }, validated.now, seed)
-          : buildDailyQueue(states, unseenWordIds, plan, validated.now, seed);
+          ? buildDailyQueue([], unseenWordIds, { ...plan, dailyNewLimit: 500 }, validated.now, seed, {
+              rotation: snapshot.rotationOrder,
+            })
+          : buildDailyQueue(states, unseenWordIds, plan, validated.now, seed, {
+              rotation: snapshot.rotationOrder,
+            });
 
       // 先组装卡片、后写会话行：卡片组装不依赖 `sessionId`，把“可能抛错的读组装”放到
       // 写库之前，避免组装中途失败留下一条永远空的会话行（那会被会话列表当成一次“0 作答”的历史）。
@@ -678,9 +715,11 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       };
 
       const cards: CardView[] = [];
+      let cardPosition = 0;
       for (const wordId of queue.interleavedWordIds) {
         const card = await buildCard({
           wordId,
+          position: cardPosition,
           state: stateByWordId.get(wordId),
           favoriteWordIds,
           trainingMode: snapshot.trainingMode,
@@ -689,6 +728,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           frequencyLookup,
           loadCandidates,
         });
+        cardPosition += 1;
         if (card !== null) {
           cards.push(card);
         }
@@ -726,7 +766,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       };
     },
 
-    async submitAnswer(input: SubmitAnswerInput): Promise<AnswerResult> {
+    async submitAnswer(input: SubmitAnswerInput & { style?: 'CHOICE' | 'REVEAL' }): Promise<AnswerResult> {
       const validated = parseOrThrow(submitAnswerInputSchema, input, '提交作答');
       const mode = requireResolvedMode(validated.mode);
 
@@ -783,6 +823,8 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           answer: validated.answer,
           isCorrect: validated.isCorrect,
           recognition: validated.recognition,
+          // 事件记下作答时的题型：混合题型下按题型统计掌握度（三题型各答对 ≥2 次）。
+          questionStyle: input.style === 'CHOICE' ? 'CHOICE' : 'REVEAL',
           stageBefore: baseState.stage,
           stageAfter: next.stage,
           // 复习作答记“本次作答所履行的到期时间”；新词首答（stage === -1）没有到期概念，记 null。

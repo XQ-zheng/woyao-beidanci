@@ -26,6 +26,7 @@ export const defaultSettings: SettingsSnapshot = {
   timeZone: 'Asia/Shanghai',
   trainingMode: 'MIXED',
   questionStyle: 'CHOICE',
+      rotationOrder: 'SEQUENTIAL',
   accent: 'uk',
   volume: 1,
   fontScale: 1,

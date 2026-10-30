@@ -18,7 +18,8 @@ function renderStudy(options: {
   readonly services?: Services | null;
   readonly session?: SessionView;
 } = {}): ReturnType<typeof render> {
-  const { services = createFakeServices(), session = makeSession() } = options;
+  // 默认用自评（REVEAL）卡：新学习页的 CHOICE 卡会渲染四选项，自评卡才是认识/不认识大按钮。
+  const { services = createFakeServices(), session = makeSession([makeCard({ style: 'REVEAL', options: [] })]) } = options;
 
   return render(
     <ThemeProvider theme={appTheme}>
@@ -40,7 +41,7 @@ afterEach(() => {
 });
 
 describe('StudyPage：居中单词卡渲染', () => {
-  it('展示放大的词形、英/美音标与发音按钮，不渲染选择题选项', async () => {
+  it('自评卡：展示放大的词形、英/美音标与发音按钮，不渲染选项', async () => {
     renderStudy();
 
     await screen.findByRole('heading', { name: 'abandon' });
@@ -48,8 +49,26 @@ describe('StudyPage：居中单词卡渲染', () => {
     expect(screen.getByText(/美 \//)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '英式发音' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '美式发音' })).toBeInTheDocument();
-    // 不再有选择题选项（用户要求：释义不做选项）
-    expect(screen.queryByRole('button', { name: /放弃/ })).toBeNull();
+    // 自评卡不渲染选项
+    expect(screen.queryByLabelText('选项区')).toBeNull();
+  });
+
+  it('选择题卡：渲染四个选项按钮，单击一个即提交', async () => {
+    const submitAnswer = vi.fn(async () => makeAnswerResult());
+    renderStudy({
+      services: createFakeServices({ study: { submitAnswer } }),
+      session: makeSession([makeCard({ style: 'CHOICE', options: ['放弃', '吸收', '维持', '庆祝'] })]),
+    });
+
+    expect(await screen.findByLabelText('选项区')).toBeInTheDocument();
+    const optionButtons = await screen.findAllByRole('button');
+    expect(optionButtons.length).toBeGreaterThanOrEqual(4);
+    fireEvent.click(screen.getByRole('button', { name: '放弃' }));
+    await waitFor(() =>
+      expect(submitAnswer).toHaveBeenCalledWith(
+        expect.objectContaining({ answer: '放弃', isCorrect: true, style: 'CHOICE' }),
+      ),
+    );
   });
 
   it('认识/不认识以左右大方框呈现，且无需先看答案即可点', async () => {
@@ -150,7 +169,7 @@ describe('StudyPage：会话结束', () => {
 
 describe('StudyPage：今日已背完后的重新开始', () => {
   it('0 卡会话弹出确认框，确认后带 force 重新开会话', async () => {
-    const startSession = vi.fn(async () => makeSession());
+    const startSession = vi.fn(async () => makeSession([makeCard({ style: 'REVEAL', options: [] })]));
     const finishSession = vi.fn(async () => makeSummary());
     renderStudy({
       services: createFakeServices({ study: { startSession, finishSession } }),
@@ -187,7 +206,7 @@ describe('StudyPage：干扰项收藏（R4 五角星）', () => {
     // 作答前不渲染任何干扰项/星标。
     expect(screen.queryByRole('button', { name: /收藏/ })).toBeNull();
 
-    fireEvent.click(await screen.findByRole('button', { name: '不认识' }));
+    fireEvent.click(await screen.findByRole('button', { name: '吸收' }));
 
     expect(await screen.findByText('吸收')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '收藏 absorb' })).toBeInTheDocument();
@@ -203,7 +222,7 @@ describe('StudyPage：干扰项收藏（R4 五角星）', () => {
       session: makeChoiceCard(),
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: '不认识' }));
+    fireEvent.click(await screen.findByRole('button', { name: '吸收' }));
     fireEvent.click(await screen.findByRole('button', { name: '收藏 absorb' }));
 
     await waitFor(() => expect(collectWord).toHaveBeenCalledWith({ lemma: 'absorb' }));
@@ -219,7 +238,7 @@ describe('StudyPage：干扰项收藏（R4 五角星）', () => {
       session: makeChoiceCard(),
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: '不认识' }));
+    fireEvent.click(await screen.findByRole('button', { name: '吸收' }));
     fireEvent.click(await screen.findByRole('button', { name: '收藏 absorb' }));
 
     expect(await screen.findByText(/收藏失败：云端 AI 未配置/)).toBeInTheDocument();

@@ -78,6 +78,7 @@ describe('settingsService：缺省快照', () => {
       timeZone: DEFAULT_TIME_ZONE,
       trainingMode: 'EN_TO_ZH',
       questionStyle: 'CHOICE',
+        rotationOrder: 'SEQUENTIAL',
       accent: 'uk',
       volume: 1,
       fontScale: 1,

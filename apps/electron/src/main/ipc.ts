@@ -99,13 +99,24 @@ export function createIpcRouter({
 
   const routes: Readonly<Record<IpcChannel, Route>> = {
     'study.startSession': {
-      schema: z.object({ deckId: z.string().min(1), seed: z.string().min(1).optional(), force: z.boolean().optional() }),
+      schema: z.object({
+        deckId: z.string().min(1),
+        seed: z.string().min(1).optional(),
+        force: z.boolean().optional(),
+        scope: z.enum(['ALL', 'NEW', 'REVIEW']).optional(),
+      }),
       run: async (payload) => {
-        const input = payload as { deckId: string; seed?: string; force?: boolean };
+        const input = payload as {
+          deckId: string;
+          seed?: string;
+          force?: boolean;
+          scope?: 'ALL' | 'NEW' | 'REVIEW';
+        };
         return services.study.startSession({
           deckId: input.deckId,
           seed: input.seed,
           force: input.force,
+          scope: input.scope,
           now: now(),
         });
       },

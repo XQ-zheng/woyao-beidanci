@@ -63,6 +63,7 @@ function makeRemoteEvent(eventId: string): { event: LearningEventRecord; state: 
       answer: 'x',
       isCorrect: false,
       recognition: 'UNKNOWN',
+      questionStyle: 'REVEAL',
       stageBefore: 0,
       stageAfter: 0,
       dueAt: null,

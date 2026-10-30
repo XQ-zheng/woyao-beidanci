@@ -412,6 +412,9 @@ export default function LibraryPage(): ReactElement {
                                       label="暂无释义"
                                     />
                                   ) : null}
+                                  {word.mastery?.mastered === true ? (
+                                    <Chip size="small" color="success" label="已掌握" />
+                                  ) : null}
                                 </Box>
                               }
                               secondary={
@@ -426,6 +429,12 @@ export default function LibraryPage(): ReactElement {
                               <Typography variant="body2" color="text.secondary">
                                 下方释义可直接修改，也可删除义项或添加义项；点「保存修改」按当前顺序一次性重建。
                               </Typography>
+                              {word.mastery !== undefined ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  答对次数：选择题 {word.mastery.choiceCorrect} 次 · 自评{' '}
+                                  {word.mastery.selfCorrect} 次（选择题与自评各答对 2 次即算已掌握）
+                                </Typography>
+                              ) : null}
                               {(senseDrafts[word.wordId] ?? []).map((draft, index) => (
                                 <Box key={`${word.wordId}-${String(index)}`} sx={{ display: 'grid', gap: 1 }}>
                                   <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>

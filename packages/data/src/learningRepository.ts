@@ -12,11 +12,13 @@
  */
 
 import type { LearningState, Recognition, TrainingMode } from '@woyao/core';
-
 import type { SqliteDatabase } from './connection';
 import { InvalidRepositoryInputError, RepositoryInvariantError } from './errors';
 import { enqueueOutboxWithin } from './syncRepository';
 import { runInTransaction } from './transaction';
+
+/** 作答题型（与 UI 的卡片样式一致；data 层自包含，不反向依赖 services）。 */
+export type QuestionStyle = 'CHOICE' | 'REVEAL';
 
 /**
  * 一条作答事件的写入形状（对应 `learning_events` 一行）。
@@ -41,6 +43,8 @@ export interface LearningEventRecord {
   readonly isCorrect: boolean;
   /** 自我认识判断。 */
   readonly recognition: Recognition;
+  /** 作答时的题型（混合模式下按题型统计掌握度用）。 */
+  readonly questionStyle: QuestionStyle;
   /** 作答前阶段。 */
   readonly stageBefore: number;
   /** 作答后阶段。 */
@@ -113,12 +117,21 @@ export interface DailyStatRecord {
   readonly activeMs: number;
 }
 
+/** 某词在某一题型下的答对次数（掌握判定用）。 */
+export interface StyleCorrectRecord {
+  readonly wordId: string;
+  readonly style: QuestionStyle;
+  readonly correctCount: number;
+}
+
 /** 学习仓储契约（Task 5 直接消费）。 */
 export interface LearningRepository {
   appendEventAndUpdateState(event: LearningEventRecord, state: LearningState): AppendEventResult;
   getState(userWordId: string): LearningState | null;
   listStatesByDeck(deckId: string): LearningState[];
   listDue(deckId: string, now: Date): LearningState[];
+  /** 按词 × 题型统计答对次数（混合题型的掌握判定：三题型各答对 ≥2 次才算背会）。 */
+  countCorrectByStyle(deckId: string): StyleCorrectRecord[];
   upsertSession(session: StudySessionRecord): void;
   listSessions(fromIso: string, toIso: string): StudySessionRecord[];
   listMistakes(deckId: string): MistakeRecord[];
@@ -236,6 +249,7 @@ interface LearningEventRow {
   answer: string;
   is_correct: number;
   recognition: Recognition;
+  question_style: string;
   stage_before: number;
   stage_after: number;
   due_at: string | null;
@@ -275,6 +289,7 @@ function toEventRecord(row: LearningEventRow): LearningEventRecord {
     prompt: row.prompt,
     answer: row.answer,
     isCorrect: row.is_correct === 1,
+    questionStyle: row.question_style === 'CHOICE' ? 'CHOICE' : 'REVEAL',
     recognition: row.recognition,
     stageBefore: row.stage_before,
     stageAfter: row.stage_after,
@@ -491,9 +506,9 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
   const insertEvent = db.prepare(
     `INSERT INTO learning_events
        (event_id, user_word_id, deck_id, word_id, session_id, mode, prompt, answer, is_correct,
-        recognition, stage_before, stage_after, due_at, answered_at, local_date, time_zone, duration_ms,
-        device_id, synced_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        recognition, question_style, stage_before, stage_after, due_at, answered_at, local_date,
+        time_zone, duration_ms, device_id, synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   );
   const STATE_COLUMNS = `user_word_id, deck_id, word_id, stage, due_at, last_reviewed_at, correct_count,
                          wrong_count, streak_correct, weight, suppressed_at`;
@@ -581,8 +596,8 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       ORDER BY local_date ASC`,
   );
   const EVENT_COLUMNS = `event_id, user_word_id, session_id, mode, prompt, answer, is_correct,
-                         recognition, stage_before, stage_after, due_at, answered_at, local_date, time_zone,
-                         duration_ms, device_id, synced_at`;
+                         recognition, question_style, stage_before, stage_after, due_at, answered_at,
+                         local_date, time_zone, duration_ms, device_id, synced_at`;
   // 排序带 `event_id` 兜底：同一毫秒内的两条事件（批量导入/回放）也要有稳定次序，
   // 否则 `finishSession` 的汇总在不同机器上可能得到不同的“最后一条”。
   const selectEventsBySession = db.prepare(
@@ -662,6 +677,7 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
             event.answer,
             event.isCorrect ? 1 : 0,
             event.recognition,
+            event.questionStyle,
             event.stageBefore,
             event.stageAfter,
             event.dueAt,
@@ -723,6 +739,19 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       requireNonEmptyString(deckId, 'deckId');
       const rows = selectStatesByDeck.all(deckId) as LearningStateRow[];
       return rows.map(toLearningState);
+    },
+
+    countCorrectByStyle(deckId: string): StyleCorrectRecord[] {
+      requireNonEmptyString(deckId, 'deckId');
+      const rows = db
+        .prepare(
+          `SELECT word_id AS wordId, question_style AS style, COUNT(*) AS correctCount
+             FROM learning_events
+            WHERE deck_id = ? AND word_id IS NOT NULL AND is_correct = 1
+            GROUP BY word_id, question_style`,
+        )
+        .all(deckId) as StyleCorrectRecord[];
+      return rows;
     },
 
     listDue(deckId: string, now: Date): LearningState[] {

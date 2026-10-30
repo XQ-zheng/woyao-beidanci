@@ -255,9 +255,13 @@ export function createReportService(options: ReportServiceOptions): ReportServic
           '日统计校验未通过',
         );
       }
+      // 第三个参数是「统计时刻」：未结束会话（用户没点完成学习就退出）的墙钟时长
+      // 要估算到这一刻为止。必须传注入时钟而不是让 SQL 读系统时间，
+      // 否则同一天的统计会随“查询发生在几点”漂移，测试也没法复现。
       const stats = await context.repos.learning.listDailyStats(
         validated.fromLocalDate,
         validated.toLocalDate,
+        toIsoInstant(context.clock.now()),
       );
       return stats.map((stat) => ({
         localDate: stat.localDate,

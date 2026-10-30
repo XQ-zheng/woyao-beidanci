@@ -255,7 +255,9 @@ export function createContentService(options: ContentServiceOptions): ContentSer
       }
 
       try {
-        const generated = await llm.generateDistractorWords({ lemma, count: 6 });
+        // count = 8：选项池要凑出 4 个「释义互不相同」的干扰项，而模型给出的相近词里
+        // 难免有拼重、释义撞车、甚至混进目标词自己（解析阶段会剔除），多要几个候选才够用。
+        const generated = await llm.generateDistractorWords({ lemma, count: 8 });
         const pool: DistractorWordView[] = [];
         const seen = new Set<string>([lemma.toLowerCase()]);
         for (const item of generated) {

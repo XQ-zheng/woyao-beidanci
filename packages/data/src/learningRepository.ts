@@ -21,6 +21,16 @@ import { runInTransaction } from './transaction';
 export type QuestionStyle = 'CHOICE' | 'REVEAL';
 
 /**
+ * 单次学习会话可计入的时长上限（4 小时）。
+ *
+ * 与 `studyService.finishSession` 的口径完全一致：`active_duration_ms` 是
+ * `max(各题思考时长之和, 墙钟时长)` 且封顶 4 小时，防“挂机/忘了关窗口”刷出天文数字。
+ * 日统计里对**未结束会话**的墙钟估算也必须受同一个上限约束，否则“昨天忘关的窗口”
+ * 会把今天的时间统计撑到几十小时。
+ */
+const SESSION_ACTIVE_CAP_MS = 4 * 60 * 60 * 1000;
+
+/**
  * 一条作答事件的写入形状（对应 `learning_events` 一行）。
  *
  * 刻意**不含** `deckId` / `wordId`：这两个值由同一次调用里的 `LearningState` 提供，
@@ -135,7 +145,26 @@ export interface LearningRepository {
   upsertSession(session: StudySessionRecord): void;
   listSessions(fromIso: string, toIso: string): StudySessionRecord[];
   listMistakes(deckId: string): MistakeRecord[];
-  listDailyStats(fromLocalDate: string, toLocalDate: string): DailyStatRecord[];
+  /**
+   * 按本地日汇总作答数与「真实学习时长」。
+   *
+   * 时长口径（**已结束会话靠落库值、未结束会话靠墙钟估算**）：
+   * - 会话行 `ended_at IS NOT NULL` → 用 `finishSession` 写下的 `active_duration_ms`；
+   * - 会话行 `ended_at IS NULL`（用户没点「完成学习」直接返回/关窗口）→ 库里这个值恒为 0，
+   *   因此**查询时**用 `min(统计时刻 - started_at, 4 小时)` 估算，否则整段学习时长会静默丢失；
+   * - 当天完全没有会话行（脚本直接提交事件）→ 退回累加每题 `duration_ms`。
+   * 最终取「会话口径」与「事件口径」的较大值。
+   *
+   * @param fromLocalDate 起始本地日（含，`YYYY-MM-DD`）。
+   * @param toLocalDate 结束本地日（含，`YYYY-MM-DD`）。
+   * @param nowIso 统计时刻（UTC ISO 毫秒）；未结束会话的墙钟估算截止到这里。
+   *   缺省用库内 `now`——服务层应显式传注入时钟，测试才可复现。
+   */
+  listDailyStats(
+    fromLocalDate: string,
+    toLocalDate: string,
+    nowIso?: string,
+  ): DailyStatRecord[];
   /**
    * 某个会话的全部作答事件，按 `answered_at` 升序（Task 5B 补）。
    *
@@ -584,17 +613,48 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       GROUP BY s.user_word_id, s.word_id, s.correct_count, s.wrong_count
       ORDER BY s.wrong_count DESC, last_wrong_at DESC, s.user_word_id ASC`,
   );
+  /**
+   * 日统计。
+   *
+   * 参数顺序 = SQL 里 `?` 出现的顺序：`(统计时刻, 起始日, 结束日)`。
+   * 统计时刻允许传 `null`：`COALESCE(?, strftime(...))` 兜到库内 `now`，
+   * 这样「不传 now」与「传 now」共用同一条预编译语句（避免两次 prepare）。
+   */
   const selectDailyStats = db.prepare(
     `SELECT e.local_date,
             COUNT(*) AS total,
             SUM(e.is_correct) AS correct,
             SUM(1 - e.is_correct) AS wrong,
-            -- 时长口径：当天有会话行时用「会话真实停留时长」之和（含读释义/听发音），
-            -- 没有会话行（如脚本直接提交事件）才退回累加每题的思考时长。
-            COALESCE(
-              (SELECT SUM(s.active_duration_ms)
-                 FROM study_sessions s
-                WHERE s.local_date = e.local_date AND s.ended_at IS NOT NULL),
+            -- 时长口径（为什么这么算）：
+            -- ① 已结束会话：用 finishSession 落库的真实停留时长（含读释义/听发音）；
+            -- ② 未结束会话（用户没点「完成学习」直接返回/关窗口）：库里 active_duration_ms 恒为 0，
+            --    若像以前那样只汇总 ended_at IS NOT NULL 的会话，整段学习时长会静默丢失
+            --    （用户实测“进去 2 分钟只统计 8 秒”）。这里改用墙钟估算：截止到统计时刻，
+            --    并钳制到 0 ~ 4 小时（与 finishSession 的封顶口径一致）；
+            -- ③ 当天没有会话行（脚本/导入直接提交事件）：退回累加每题思考时长；
+            -- 最终取「会话口径」与「事件口径」的较大值，两个都不能凭空造数据。
+            MAX(
+              COALESCE(
+                (SELECT SUM(
+                          CASE
+                            WHEN s.ended_at IS NOT NULL THEN s.active_duration_ms
+                            ELSE MAX(
+                                   0,
+                                   MIN(
+                                     CAST(
+                                       (julianday(COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))
+                                         - julianday(s.started_at)) * 86400000
+                                       AS INTEGER
+                                     ),
+                                     ${String(SESSION_ACTIVE_CAP_MS)}
+                                   )
+                                 )
+                          END
+                        )
+                   FROM study_sessions s
+                  WHERE s.local_date = e.local_date),
+                0
+              ),
               SUM(ifnull(e.duration_ms, 0))
             ) AS active_ms
        FROM learning_events e
@@ -835,10 +895,16 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       }));
     },
 
-    listDailyStats(fromLocalDate: string, toLocalDate: string): DailyStatRecord[] {
+    listDailyStats(
+      fromLocalDate: string,
+      toLocalDate: string,
+      nowIso?: string,
+    ): DailyStatRecord[] {
       requireLocalDate(fromLocalDate, 'fromLocalDate');
       requireLocalDate(toLocalDate, 'toLocalDate');
-      const rows = selectDailyStats.all(fromLocalDate, toLocalDate) as {
+      // 未传统计时刻 → 绑 null，SQL 里 COALESCE 到库内 now（口径仍然统一，只是时钟由 SQLite 提供）。
+      const cutoff = nowIso === undefined ? null : requireIsoInstant(nowIso, 'nowIso');
+      const rows = selectDailyStats.all(cutoff, fromLocalDate, toLocalDate) as {
         local_date: string;
         total: number;
         correct: number;

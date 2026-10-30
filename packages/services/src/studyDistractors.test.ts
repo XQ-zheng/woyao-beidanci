@@ -197,7 +197,7 @@ describe('libraryService：setWordDistractors / listWordDistractors（R5 服务�
     expect(saved).toEqual(['Zzz', 'yyy']);
     expect(harness.sync.words.listWordDistractors('w-1')).toEqual(['Zzz', 'yyy']);
     // 每个干扰词都预热了 AI 池。
-    expect(llm.generateDistractorWords).toHaveBeenCalledWith({ lemma: 'Zzz', count: 6 });
+    expect(llm.generateDistractorWords).toHaveBeenCalledWith({ lemma: 'Zzz', count: 8 });
     expect(llm.generateDistractorWords).toHaveBeenCalledWith({ lemma: 'yyy', count: 6 });
     expect(harness.sync.contentCache.get('distractors:zzz')).not.toBeNull();
     expect(harness.sync.contentCache.get('distractors:yyy')).not.toBeNull();

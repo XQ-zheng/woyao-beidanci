@@ -84,7 +84,9 @@ function parseDistractorArray(text: string, targetLemma: string): LlmDistractorW
     const rawMeanings = Array.isArray(record.meanings)
       ? record.meanings.filter((entry): entry is string => typeof entry === 'string')
       : [];
-    const meanings = rawMeanings.map((entry) => entry.trim()).filter((entry) => entry !== '').slice(0, 3);
+    // 最多保留 4 条：用户要求干扰项显示「这个词的全部常用义项」，
+    // 原来的 3 条会把第 4 个义项（常是“比喻/引申义”）截掉，选项看起来就不完整。
+    const meanings = rawMeanings.map((entry) => entry.trim()).filter((entry) => entry !== '').slice(0, 4);
     const meaningZh =
       meanings.length > 0
         ? meanings.join('；')
@@ -200,8 +202,11 @@ export function createCloudLlm(options: CloudLlmOptions): LlmPort {
         [
           '你是出题助手。给定的一个英语单词，列出与它拼写相近、读音相近或容易混淆的英语单词。',
           `只输出 JSON 数组，不要任何其他文字或代码围栏，恰好 ${String(count)} 个元素，每个元素形如：`,
-          '{"lemma":"相近的英文单词（小写）","meanings":["义项1","义项2","义项3"]}',
-          'meanings 给出该词最常见的中文义项（1 到 3 条，按常用度排序，用简短名词或动宾短语）。',
+          '{"lemma":"相近的英文单词（小写）","meanings":["义项1","义项2","义项3","义项4"]}',
+          // 用户明确要求干扰项显示「该词的所有意思」：只要模型多给义项，选项文本就更像
+          // 一个真实的释义条目，而不是一个孤零零的短词；上限 4 条是为了不让单个选项长到
+          // 撑破按钮（再多义项在选项里也读不过来）。
+          'meanings 给出该词的**全部常用义项**（最多 4 条，按常用度排序；只有一个意思就只给一条，用简短名词或动宾短语）。',
           '数组里绝不能包含目标单词本身。',
         ].join('\n'),
         `目标单词：${input.lemma}`,

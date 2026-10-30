@@ -75,6 +75,55 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
   nowRef.current = now;
   // StrictMode 会重复执行 effect；用 ref 保证最多发起一次 startSession。
   const startRequested = useRef(false);
+  /**
+   * 当前**还没结束**的会话 id（离开页面时兜底收尾用）。
+   *
+   * 为什么需要：只有 `finishSession` 会把「真实停留时长」写进会话行，用户不点
+   * 「完成学习」直接返回上一页 / 关窗口时 `ended_at` 一直是 null，每日统计里那一天的
+   * 学习时长就整段丢失（实测“进去 2 分钟只统计 8 秒”）。
+   */
+  const pendingSessionId = useRef<string | null>(null);
+  /** 卸载兜底定时器句柄（StrictMode 的“挂载→立刻卸载→再挂载”要能取消掉，见下方 effect）。 */
+  const unmountFinishTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 清理函数里拿不到最新的闭包变量，用 ref 抓住当前服务实例。
+  const servicesRef = useRef(services);
+  servicesRef.current = services;
+
+  // 只登记「真的有卡片要背」的会话：0 张卡的会话在两个 startSession 分支里已当场结束，
+  // 这里再登记只会造成重复收尾。
+  useEffect(() => {
+    pendingSessionId.current =
+      session !== null && session.cards.length > 0 ? session.sessionId : null;
+  }, [session]);
+
+  /**
+   * 离开页面兜底结束会话（fire-and-forget）。
+   *
+   * 收尾排到宏任务里而不是直接在清理函数里发请求：React StrictMode（开发环境）会
+   * 「挂载 → 立刻卸载 → 再挂载」，直接发请求会把刚开始的会话当场结束掉（时长归零）。
+   */
+  useEffect(() => {
+    if (unmountFinishTimer.current !== null) {
+      clearTimeout(unmountFinishTimer.current);
+      unmountFinishTimer.current = null;
+    }
+    return () => {
+      unmountFinishTimer.current = setTimeout(() => {
+        unmountFinishTimer.current = null;
+        const sessionId = pendingSessionId.current;
+        const activeServices = servicesRef.current;
+        if (sessionId === null || activeServices === null) {
+          return;
+        }
+        // 先清空再发请求：`finishSession` 会把 `ended_at` 改写成“当下”，
+        // 重复调用等于把时长越拖越长，所以一次会话只允许一次兜底收尾。
+        pendingSessionId.current = null;
+        void activeServices.study.finishSession({ sessionId, now: nowRef.current() }).catch(() => {
+          // 用户已经离开这一页，没有可提示的地方；统计层还有墙钟估算兜底。
+        });
+      }, 0);
+    };
+  }, []);
 
   useEffect(() => {
     if (services === null || initialState !== null || startRequested.current) {
@@ -334,6 +383,9 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
         sessionId: activeSession.sessionId,
         now: nowRef.current(),
       });
+      // 会话已经正常结束：清掉待收尾标记，否则下面的 navigate 触发卸载时
+      // 兜底逻辑会再结束一次（endedAt 被改写成更晚的时刻，时长被拉长）。
+      pendingSessionId.current = null;
       navigate('/review', { state: { summary } });
     } catch (cause: unknown) {
       setSubmitError(`结束学习失败：${describeError(cause)}`);

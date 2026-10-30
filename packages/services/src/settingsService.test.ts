@@ -140,6 +140,18 @@ describe('settingsService：局部更新', () => {
 
     expect(error.issues.map((issue) => issue.path)).toContain('volume');
   });
+
+  it('壁纸空串是合法值：设置后能读回，不会让启动失败', async () => {
+    const { harness, service } = makeService();
+
+    // 设一个壁纸再清空（空串 = 无壁纸），两次 update + getSnapshot 都必须成功。
+    await service.update({ wallpaper: 'file:///E:/wp.png' });
+    expect((await service.getSnapshot()).wallpaper).toBe('file:///E:/wp.png');
+
+    await service.update({ wallpaper: '' });
+    expect((await service.getSnapshot()).wallpaper).toBe('');
+    expect(harness.sync.settings.get('ui.wallpaper')).toBe('""');
+  });
 });
 
 describe('settingsService：复习计划的范围校验（唯一真相在 core）', () => {

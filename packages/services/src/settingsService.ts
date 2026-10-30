@@ -102,6 +102,8 @@ export interface SettingsServiceOptions {
 const storedIntSchema = z.number().int();
 const storedDayListSchema = z.array(z.number().int());
 const storedStringSchema = z.string().min(1);
+/** 允许空串的字符串（壁纸：空串 = 无壁纸，是合法值而非脏数据）。 */
+const storedNullableStringSchema = z.string();
 const storedBooleanSchema = z.boolean();
 const storedVolumeSchema = z.number().min(VOLUME_MIN).max(VOLUME_MAX);
 const storedFontScaleSchema = z.number().min(FONT_SCALE_MIN).max(FONT_SCALE_MAX);
@@ -215,7 +217,7 @@ export function createSettingsService(options: SettingsServiceOptions): Settings
       // 需求明确要求这两项默认**不勾选**：开机自启与最小化到托盘都属于“用户主动开启”的能力。
       autoStart: readStored(stored, SETTING_KEYS.autoStart, storedBooleanSchema, false),
       minimizeToTray: readStored(stored, SETTING_KEYS.minimizeToTray, storedBooleanSchema, false),
-      wallpaper: readStored(stored, SETTING_KEYS.wallpaper, storedStringSchema, ''),
+      wallpaper: readStored(stored, SETTING_KEYS.wallpaper, storedNullableStringSchema, ''),
       fontFamily: readStored(stored, SETTING_KEYS.fontFamily, storedStringSchema, 'system'),
     };
   }

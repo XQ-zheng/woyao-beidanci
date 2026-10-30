@@ -84,8 +84,9 @@ describe('TodayPage：进入学习', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '开始背新词' }));
 
-    expect(await screen.findByText(/今天已经背诵完毕/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '重新开始学习' })).toBeInTheDocument();
+    // 点「开始背新词」但新词早已学完 → 引导去复习（而不是笼统的「今天已背完」）。
+    expect(await screen.findByText(/此单词本中的单词您之前已经背诵完成/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '开始复习' })).toBeInTheDocument();
     await waitFor(() => expect(finishSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's-1' })));
   });
 

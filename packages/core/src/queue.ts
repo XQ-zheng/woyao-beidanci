@@ -208,7 +208,7 @@ export function buildDailyQueue(
   plan: ReviewPlan,
   now: Date,
   seed: string,
-  options: { rotation?: 'SEQUENTIAL' | 'RANDOM' } = {},
+  options: { rotation?: 'SEQUENTIAL' | 'RANDOM'; ignoreDue?: boolean } = {},
 ): DailyQueue {
   assertValidReviewPlan(plan);
   // 随机轮换：新词池按种子确定性洗牌（同一天同一词库重开会话顺序一致）；
@@ -250,7 +250,8 @@ export function buildDailyQueue(
       continue;
     }
     const dueMilliseconds = due.getTime();
-    if (dueMilliseconds > nowMilliseconds) {
+    // ignoreDue：强制复习（今日新词已学完、用户选择「开始复习」）不看到期时间。
+    if (dueMilliseconds > nowMilliseconds && options.ignoreDue !== true) {
       continue;
     }
     candidates.push({

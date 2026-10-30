@@ -179,6 +179,8 @@ export interface LlmDistractorWord {
   readonly lemma: string;
   /** 简明中文释义（`EN_TO_ZH` 选项文本的来源）。 */
   readonly meaningZh: string;
+  /** 该词的多个常用义项（1–3 条）；选项文本会用全部义项拼接。 */
+  readonly meanings?: readonly string[];
 }
 
 /**

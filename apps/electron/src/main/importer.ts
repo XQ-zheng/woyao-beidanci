@@ -66,6 +66,19 @@ export async function pickImportFile(window: BrowserWindow | null): Promise<stri
   return result.filePaths[0] ?? null;
 }
 
+/** 弹出字体文件选择对话框；取消返回 null。 */
+export async function pickFontFile(window: BrowserWindow | null): Promise<string | null> {
+  const result = await dialog.showOpenDialog(window ?? (undefined as never), {
+    title: '选择字体文件',
+    properties: ['openFile'],
+    filters: [{ name: '字体', extensions: ['ttf', 'otf', 'woff', 'woff2'] }],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0] ?? null;
+}
+
 /** 弹出图片选择对话框（壁纸用）；取消返回 null。 */
 export async function pickImageFile(window: BrowserWindow | null): Promise<string | null> {
   const result = await dialog.showOpenDialog(window ?? (undefined as never), {

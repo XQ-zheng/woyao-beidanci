@@ -23,6 +23,7 @@ import type { TrainingMode } from '@woyao/core';
 
 import { useServiceData } from '../hooks/useServiceData';
 import DataLocationSection from '../components/DataLocationSection';
+import { applyFontFamily, applyWallpaper } from '../lib/appearance';
 import { applyFontScale } from '../lib/fontScale';
 import { questionStyleLabel, rotationOrderLabel, trainingModeLabel } from '../lib/labels';
 import { useServices } from '../services/ServiceProvider';
@@ -152,33 +153,42 @@ export default function SettingsPage(): ReactElement {
   const activeServices = services;
 
   /** 局部更新草稿。 */
-  /** 选壁纸：走桌面端文件对话框，读回绝对路径（web 预览无 bridge 时静默忽略）。 */
-  async function pickWallpaper(): Promise<void> {
-    const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } }).woyao;
+  /** 调桌面端「选文件」通道并解包 {ok,data}（preload 的 invoke 不负责解包）。 */
+  async function invokePickFile(channel: string): Promise<string | null> {
+    const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } })
+      .woyao;
     if (bridge === undefined) {
-      setMessage('壁纸选择仅在桌面端可用。');
-      return;
+      throw new Error('仅桌面端可用');
     }
+    const raw = (await bridge.invoke(channel)) as
+      | { ok: true; data: string | null }
+      | { ok: false; error: { message: string } };
+    if (!raw.ok) {
+      throw new Error(raw.error.message);
+    }
+    return raw.data ?? null;
+  }
+
+  /** 选壁纸：文件对话框 → 存 file:// 路径 → 立即应用。 */
+  async function pickWallpaper(): Promise<void> {
     try {
-      const path = (await bridge.invoke('settings.pickWallpaper')) as string | null;
-      if (path !== null && path !== '') {
-        update('wallpaper', `file://${path.replace(/\\/gu, '/')}`);
-        setMessage('壁纸已更新，点「保存」生效。');
+      const path = await invokePickFile('settings.pickWallpaper');
+      if (path === null || path === '') {
+        return;
       }
+      const url = `file://${path.replace(/\\/gu, '/')}`;
+      update('wallpaper', url);
+      applyWallpaper(url);
+      setMessage('壁纸已生效（点「保存」后重启仍保留）。');
     } catch (cause: unknown) {
       setMessage(`选择壁纸失败：${describeError(cause)}`);
     }
   }
 
-  /** 导入字体：读本地 .ttf/.otf，注册 @font-face 并设为界面字体。 */
+  /** 导入字体：选 .ttf/.otf → FontFace 注册 → 设为界面字体并立即生效。 */
   async function pickFont(): Promise<void> {
-    const bridge = (globalThis as { woyao?: { invoke(channel: string, payload?: unknown): Promise<unknown> } }).woyao;
-    if (bridge === undefined) {
-      setMessage('字体导入仅在桌面端可用。');
-      return;
-    }
     try {
-      const path = (await bridge.invoke('settings.pickWallpaper')) as string | null;
+      const path = await invokePickFile('settings.pickFont');
       if (path === null || path === '') {
         return;
       }
@@ -187,7 +197,8 @@ export default function SettingsPage(): ReactElement {
       await face.load();
       document.fonts.add(face);
       update('fontFamily', name);
-      setMessage('字体已导入，点「保存」后全局生效。');
+      applyFontFamily(name);
+      setMessage('字体已导入并生效（点「保存」后重启仍保留）。');
     } catch (cause: unknown) {
       setMessage(`导入字体失败：${describeError(cause)}`);
     }
@@ -420,7 +431,10 @@ export default function SettingsPage(): ReactElement {
               size="small"
               label="界面字体"
               value={draft.fontFamily}
-              onChange={(event) => update('fontFamily', event.target.value)}
+              onChange={(event) => {
+                update('fontFamily', event.target.value);
+                applyFontFamily(event.target.value);
+              }}
               sx={{ maxWidth: 320 }}
             >
               {FONT_OPTIONS.map((option) => (

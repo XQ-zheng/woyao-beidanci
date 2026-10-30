@@ -31,6 +31,7 @@ export const IPC_CHANNELS = [
   'settings.getDataLocation',
   'settings.pickDataFolder',
   'settings.pickWallpaper',
+  'settings.pickFont',
   'settings.changeDataLocation',
   'settings.relaunchApp',
   'settings.loadReviewPlan',

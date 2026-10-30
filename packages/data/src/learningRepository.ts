@@ -585,15 +585,22 @@ export function createLearningRepository(db: SqliteDatabase): LearningRepository
       ORDER BY s.wrong_count DESC, last_wrong_at DESC, s.user_word_id ASC`,
   );
   const selectDailyStats = db.prepare(
-    `SELECT local_date,
+    `SELECT e.local_date,
             COUNT(*) AS total,
-            SUM(is_correct) AS correct,
-            SUM(1 - is_correct) AS wrong,
-            SUM(ifnull(duration_ms, 0)) AS active_ms
-       FROM learning_events
-      WHERE local_date >= ? AND local_date <= ?
-      GROUP BY local_date
-      ORDER BY local_date ASC`,
+            SUM(e.is_correct) AS correct,
+            SUM(1 - e.is_correct) AS wrong,
+            -- 时长口径：当天有会话行时用「会话真实停留时长」之和（含读释义/听发音），
+            -- 没有会话行（如脚本直接提交事件）才退回累加每题的思考时长。
+            COALESCE(
+              (SELECT SUM(s.active_duration_ms)
+                 FROM study_sessions s
+                WHERE s.local_date = e.local_date AND s.ended_at IS NOT NULL),
+              SUM(ifnull(e.duration_ms, 0))
+            ) AS active_ms
+       FROM learning_events e
+      WHERE e.local_date >= ? AND e.local_date <= ?
+      GROUP BY e.local_date
+      ORDER BY e.local_date ASC`,
   );
   const EVENT_COLUMNS = `event_id, user_word_id, session_id, mode, prompt, answer, is_correct,
                          recognition, question_style, stage_before, stage_after, due_at, answered_at,

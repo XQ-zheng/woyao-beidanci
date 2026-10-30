@@ -15,7 +15,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import type { AnswerResult, SessionView } from '@woyao/services';
 
 import { AnswerFeedback } from '../components/AnswerFeedback';
-import { speakWithTts } from '../lib/speech';
+import { speak } from '../lib/speech';
 import { useServices } from '../services/ServiceProvider';
 import { PageShell } from './PageShell';
 
@@ -375,7 +375,7 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
             <Typography variant="body1" color="text.secondary">
               英 /{card.phoneticUk ?? '—'}/
             </Typography>
-            <Button size="small" variant="outlined" onClick={() => speakWithTts(card.lemma, 'uk')} aria-label="英式发音">
+            <Button size="small" variant="outlined" onClick={() => speak(card.lemma, 'uk')} aria-label="英式发音">
               🔊 英式
             </Button>
           </Box>
@@ -383,7 +383,7 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
             <Typography variant="body1" color="text.secondary">
               美 /{card.phoneticUs ?? '—'}/
             </Typography>
-            <Button size="small" variant="outlined" onClick={() => speakWithTts(card.lemma, 'us')} aria-label="美式发音">
+            <Button size="small" variant="outlined" onClick={() => speak(card.lemma, 'us')} aria-label="美式发音">
               🔊 美式
             </Button>
           </Box>
@@ -503,7 +503,14 @@ export default function StudyPage({ now = (): Date => new Date() }: StudyPagePro
                         py: 0.25,
                       }}
                     >
-                      <Typography variant="body2">{text}</Typography>
+                      {lemma !== null ? (
+                        <Typography component="span" variant="body2" sx={{ fontWeight: 700 }}>
+                          {lemma}
+                        </Typography>
+                      ) : null}
+                      <Typography component="span" variant="body2" color="text.secondary">
+                        {text}
+                      </Typography>
                       {lemma !== null ? (
                         <IconButton
                           size="small"

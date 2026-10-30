@@ -78,9 +78,19 @@ function parseDistractorArray(text: string, targetLemma: string): LlmDistractorW
     if (item === null || typeof item !== 'object') {
       continue;
     }
-    const record = item as { lemma?: unknown; meaningZh?: unknown };
+    const record = item as { lemma?: unknown; meaningZh?: unknown; meanings?: unknown };
     const lemma = typeof record.lemma === 'string' ? record.lemma.trim() : '';
-    const meaningZh = typeof record.meaningZh === 'string' ? record.meaningZh.trim() : '';
+    // 新格式给 meanings 数组（多义项）；旧格式只有 meaningZh 单条 —— 两种都收。
+    const rawMeanings = Array.isArray(record.meanings)
+      ? record.meanings.filter((entry): entry is string => typeof entry === 'string')
+      : [];
+    const meanings = rawMeanings.map((entry) => entry.trim()).filter((entry) => entry !== '').slice(0, 3);
+    const meaningZh =
+      meanings.length > 0
+        ? meanings.join('；')
+        : typeof record.meaningZh === 'string'
+          ? record.meaningZh.trim()
+          : '';
     if (lemma === '' || meaningZh === '') {
       continue;
     }
@@ -88,7 +98,7 @@ function parseDistractorArray(text: string, targetLemma: string): LlmDistractorW
     if (lemma.toLowerCase() === targetKey) {
       continue;
     }
-    words.push({ lemma, meaningZh });
+    words.push(meanings.length > 0 ? { lemma, meaningZh, meanings } : { lemma, meaningZh });
   }
   if (words.length === 0) {
     throw new Error('AI 返回的干扰词为空');
@@ -190,7 +200,8 @@ export function createCloudLlm(options: CloudLlmOptions): LlmPort {
         [
           '你是出题助手。给定的一个英语单词，列出与它拼写相近、读音相近或容易混淆的英语单词。',
           `只输出 JSON 数组，不要任何其他文字或代码围栏，恰好 ${String(count)} 个元素，每个元素形如：`,
-          '{"lemma":"相近的英文单词（小写）","meaningZh":"它的简明中文释义"}',
+          '{"lemma":"相近的英文单词（小写）","meanings":["义项1","义项2","义项3"]}',
+          'meanings 给出该词最常见的中文义项（1 到 3 条，按常用度排序，用简短名词或动宾短语）。',
           '数组里绝不能包含目标单词本身。',
         ].join('\n'),
         `目标单词：${input.lemma}`,

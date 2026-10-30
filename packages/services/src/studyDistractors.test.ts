@@ -94,11 +94,9 @@ describe('studyService：AI 干扰项（R3）', () => {
     const card = first.cards[0]!;
     expect(card.style).toBe('CHOICE');
 
-    // 选项 = 正确答案 + 3 个 AI 释义；每个干扰项都能映射回来源词形。
-    const expectedAnswer = ['释义1甲', '释义1乙'][
-      selectAnswerSenseIndex('deck-1|2025-03-01', 'w-1', 2)
-    ];
-    expect(card.answer).toBe(expectedAnswer);
+    // 选项 = 正确答案（该词全部义项拼接）+ 3 个 AI 释义；每个干扰项都能映射回来源词形。
+    expect(card.answer).toBe('释义1甲；释义1乙');
+    expect(selectAnswerSenseIndex('deck-1|2025-03-01', 'w-1', 2)).toBeGreaterThanOrEqual(0);
     expect(card.options).toHaveLength(4);
     const distractorTexts = card.options.filter((text) => text !== card.answer);
     expect(new Set(distractorTexts)).toEqual(new Set(['退位', '绑架', '使羞愧']));

@@ -202,10 +202,12 @@ export const distractorPoolInputSchema = z.strictObject({
   lemma: z.string().trim().min(1, '词形不能为空'),
 });
 
-/** 一个 AI 相近干扰词（词形 + 中文释义）。 */
+/** 一个 AI 相近干扰词（词形 + 中文释义；`meanings` 为该词的多个常用义项）。 */
 export interface DistractorWordView {
   readonly lemma: string;
   readonly meaningZh: string;
+  /** 该干扰词的多个义项（用户要求：干扰项也显示全部意思）；缺省时退回 `meaningZh`。 */
+  readonly meanings?: readonly string[];
 }
 
 /** 词库内的一个词（含义项与词频）。 */

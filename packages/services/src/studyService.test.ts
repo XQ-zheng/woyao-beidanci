@@ -143,12 +143,9 @@ describe('studyService：开始会话', () => {
     expect(card?.mode).toBe('EN_TO_ZH');
     expect(card?.style).toBe('CHOICE');
     expect(card?.prompt).toBe('word1');
-    // R2：EN_TO_ZH 不再固定考义项 1，而是在全部非空义项里按 (seed, wordId) 确定性挑一个。
-    // 缺省种子 = `${deckId}|${localDate}`，与 startSession 的派生口径一致。
-    const expectedSense = ['释义1甲', '释义1乙'][
-      selectAnswerSenseIndex('deck-1|2025-03-01', 'w-1', 2)
-    ];
-    expect(card?.answer).toBe(expectedSense);
+    // R1 变更：EN_TO_ZH 的正确选项给出该词**全部**义项（「；」拼接），
+    // 不再只显示被抽中的那一条——用户要求选项里能看到单词的所有意思。
+    expect(card?.answer).toBe('释义1甲；释义1乙');
     // 选项含正确答案；候选不足时会少于 4 个，但绝不能没有答案。
     expect(card?.options).toContain(card?.answer);
     expect(card?.isNew).toBe(true);
@@ -234,7 +231,9 @@ describe('studyService：开始会话', () => {
     const multiCard = enSession.cards.find((card) => card.wordId === 'multi');
     expect(multiCard?.mode).toBe('EN_TO_ZH');
     const expectedIndex = selectAnswerSenseIndex('deck-1|2025-03-01', 'multi', 2);
-    expect(multiCard?.answer).toBe(['放弃', '放任'][expectedIndex]);
+    expect(multiCard?.answer).toBe('放弃；放任');
+    // 仍抽出同一条确定性义项（用于反馈/判卷口径），只是选项文本改为全部义项。
+    expect(expectedIndex).toBeGreaterThanOrEqual(0);
     // 卡片仍带全部义项（反馈区展示用）。
     expect(multiCard?.senses.map((sense) => sense.simpleZh.trim())).toEqual(['放弃', '放任']);
 
@@ -246,7 +245,7 @@ describe('studyService：开始会话', () => {
     expect(singleCard?.answer).toBe('Ability');
   });
 
-  it('R2：submitAnswer 的 correctAnswer 与卡片 answer 同一条确定性口径（多义项不再只认义项 1）', async () => {
+  it('R2：submitAnswer 的 correctAnswer 与卡片 answer 一致（多义项全部展示）', async () => {
     const { harness, study } = makeEnv();
     harness.seedWord({
       id: 'multi',

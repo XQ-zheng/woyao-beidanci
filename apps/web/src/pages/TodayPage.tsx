@@ -78,6 +78,12 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
   const [relearnOpen, setRelearnOpen] = useState(false);
   /** 触发确认框时用户点的范围（重开时沿用，保证「背新词」重开还是背新词）。 */
   const [relearnScope, setRelearnScope] = useState<'ALL' | 'NEW' | 'REVIEW'>('ALL');
+  /**
+   * 0 卡的两种成因，文案与按钮不同：
+   * - learnDone：点「背新词」但词库的新词早就学完了（历史学过）→ 引导去复习
+   * - dayDone：今日计划确实都做完了（复习也不剩）→ 问是否重新开始
+   */
+  const [emptyReason, setEmptyReason] = useState<'learnDone' | 'dayDone'>('dayDone');
   /** 确认重学后正在重开会话。 */
   const [relearning, setRelearning] = useState(false);
 
@@ -183,8 +189,9 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
         } catch {
           // 收尾失败不改变“今天没有待学词”的结论。
         }
-        // 用户要求：弹确认框询问是否重新开始（重开的一轮记录也保留），而不是只给一句提示。
+        // 用户要求：弹确认框说明成因并给出下一步（重开的记录也都保留），而不是只给一句提示。
         setRelearnScope(scope);
+        setEmptyReason(scope === 'NEW' ? 'learnDone' : 'dayDone');
         setRelearnOpen(true);
         return;
       }
@@ -267,11 +274,14 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
       </Box>
 
       <Dialog open={relearnOpen} onClose={relearning ? undefined : () => setRelearnOpen(false)}>
-        <DialogTitle>今天已经背诵完毕</DialogTitle>
+        <DialogTitle>
+          {emptyReason === 'learnDone' ? '此单词本已背诵完成' : '今天已经背诵完毕'}
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            今日的学习计划已经完成。是否需要重新开始学习？
-            重新开始的这一次也会记录在学习历史里，与之前的记录互不影响。
+            {emptyReason === 'learnDone'
+              ? '此单词本中的单词您之前已经背诵完成，是否开始复习？'
+              : '今日的学习计划已经完成。是否需要重新开始学习？重新开始的这一次也会记录在学习历史里，与之前的记录互不影响。'}
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -292,8 +302,9 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
               try {
                 const session: SessionView = await services.study.startSession({
                   deckId: selectedDeck.deckId,
+                  // 「之前背完过」→ 强制复习已学词；「今日已背完」→ 按用户点的范围重来。
                   force: true,
-                  scope: relearnScope,
+                  scope: emptyReason === 'learnDone' ? 'REVIEW' : relearnScope,
                   now: nowRef.current(),
                 });
                 setRelearnOpen(false);
@@ -306,7 +317,7 @@ export default function TodayPage({ now = (): Date => new Date() }: TodayPagePro
               }
             }}
           >
-            {relearning ? '正在准备…' : '重新开始学习'}
+            {relearning ? '正在准备…' : emptyReason === 'learnDone' ? '开始复习' : '重新开始学习'}
           </Button>
         </DialogActions>
       </Dialog>

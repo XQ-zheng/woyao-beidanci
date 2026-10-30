@@ -261,12 +261,15 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         for (const item of generated) {
           const candidateLemma = typeof item.lemma === 'string' ? item.lemma.trim() : '';
           const meaningZh = typeof item.meaningZh === 'string' ? item.meaningZh.trim() : '';
+          const meanings = Array.isArray(item.meanings)
+            ? item.meanings.filter((entry): entry is string => typeof entry === 'string').map((e) => e.trim()).filter((e) => e !== '')
+            : undefined;
           // 防御性过滤：目标词本身与空词条一律剔除（绝不把题干词混进干扰项）。
           if (candidateLemma === '' || meaningZh === '' || seen.has(candidateLemma.toLowerCase())) {
             continue;
           }
           seen.add(candidateLemma.toLowerCase());
-          pool.push({ lemma: candidateLemma, meaningZh });
+          pool.push(meanings !== undefined && meanings.length > 0 ? { lemma: candidateLemma, meaningZh, meanings } : { lemma: candidateLemma, meaningZh });
         }
         await contentCache.set({
           cacheKey,

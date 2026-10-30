@@ -297,35 +297,6 @@ export function selectAnswerSenseIndex(seed: string, wordId: string, senseCount:
   return fnv1a32(`${seed}:${wordId}`) % senseCount;
 }
 
-/**
- * 从会话行的计划快照里取回会话种子。
- *
- * `startSession` 把种子随计划一起写进 `plan_snapshot_json`（判卷要用）；
- * 旧版本会话的快照里没有 `seed` 字段，解析失败/缺失一律返回 `null`，
- * 调用方回退到 core「第一个非空义项」的旧口径——宁可口径退一档，也不抛错。
- *
- * @param planSnapshotJson 会话行的快照 JSON（可空）。
- * @returns 会话种子；取不到时为 `null`。
- */
-function parseSessionSeed(planSnapshotJson: string | null): string | null {
-  if (planSnapshotJson === null) {
-    return null;
-  }
-  try {
-    const parsed: unknown = JSON.parse(planSnapshotJson);
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      typeof (parsed as { seed?: unknown }).seed === 'string'
-    ) {
-      return (parsed as { seed: string }).seed;
-    }
-  } catch {
-    // 损坏的快照：走旧口径，不影响作答主流程。
-  }
-  return null;
-}
-
 /** 选项文本的排重口径：去首尾空白 + 小写（与 core 的 normalizeText 同一口径）。 */
 function normalizeOptionKey(text: string): string {
   return text.trim().toLowerCase();
@@ -494,7 +465,10 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       const selected =
         nonEmptySenses[selectAnswerSenseIndex(input.seed, word.id, nonEmptySenses.length)] ??
         nonEmptySenses[0]!;
-      answer = selected.simpleZh.trim();
+      // 用户要求：正确选项给出该词的**全部**意思（不是只出被抽中的那一条义项）。
+      // 用「；」拼接并去重；反馈区的义项列表仍是逐条展示。
+      const allMeanings = [...new Set(nonEmptySenses.map((sense) => sense.simpleZh.trim()))];
+      answer = allMeanings.join('；');
       // 传给 generateDistractors 的 target 只含被考的义项：core 的“候选与目标义项有交集
       // 则剔除”的排重只应对被考义项生效——带全部义项会让正确答案被其他义项误判成重复。
       target = {
@@ -511,6 +485,11 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
     if (style === 'CHOICE') {
       const entries: DistractorEntry[] = [];
       const usedKeys = new Set<string>([normalizeOptionKey(answer)]);
+      /** 干扰词 → 选项文本：该词的全部义项拼接（缺多义项时退回单条释义）。 */
+      const optionTextOf = (item: { meaningZh: string; meanings?: readonly string[] }): string => {
+        const list = item.meanings !== undefined && item.meanings.length > 0 ? item.meanings : [item.meaningZh];
+        return [...new Set(list.map((entry) => entry.trim()).filter((entry) => entry !== ''))].join('；');
+      };
       /** 占一个干扰席：文本为空或与已选项重复时放弃（绝不编造、正确答案绝不重复出现）。 */
       const occupy = (text: string, lemma: string): boolean => {
         const key = normalizeOptionKey(text);
@@ -533,7 +512,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
           }
           const pool = await loadDistractorPool(customLemma);
           for (const item of pool) {
-            if (occupy(item.meaningZh, customLemma)) {
+            if (occupy(optionTextOf(item), customLemma)) {
               break;
             }
           }
@@ -548,7 +527,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
             if (item.lemma.toLowerCase() === word.lemma.toLowerCase()) {
               continue;
             }
-            occupy(item.meaningZh, item.lemma);
+            occupy(optionTextOf(item), item.lemma);
           }
         }
       } else {
@@ -579,21 +558,40 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       //    绝不编造）。候选池按需加载：AI/自定义已凑满 3 席时整库义项一次都不读。
       if (entries.length < REQUIRED_DISTRACTOR_COUNT) {
         const candidates = await input.loadCandidates();
-        const fallback = generateDistractors(target, candidates, input.trainingMode, input.seed);
-        // 干扰项文本 → 候选词形：收藏五角星需要知道选项来自哪个词。
-        const lemmaByText = new Map<string, string>();
+        // 回退路径同样遵守「一个选项 = 一个词的全部意思」：
+        // 候选词的义项拼接后占席，按 core 的相似度顺序优先。
+        const ranked = generateDistractors(target, candidates, input.trainingMode, input.seed);
+        const byLemma = new Map<string, (typeof candidates)[number]>();
         for (const candidate of candidates) {
-          const text = displayAnswerOf(candidate, mode);
-          const key = normalizeOptionKey(text);
-          if (text !== '' && !lemmaByText.has(key)) {
-            lemmaByText.set(key, candidate.lemma);
+          byLemma.set(candidate.lemma, candidate);
+        }
+        const ordered: (typeof candidates)[number][] = [];
+        for (const text of ranked) {
+          for (const candidate of candidates) {
+            if (candidate.senses.some((sense) => normalizeOptionKey(sense) === normalizeOptionKey(text))) {
+              if (!ordered.includes(candidate)) {
+                ordered.push(candidate);
+              }
+              break;
+            }
           }
         }
-        for (const text of fallback) {
+        for (const candidate of candidates) {
+          if (!ordered.includes(candidate)) {
+            ordered.push(candidate);
+          }
+        }
+        for (const candidate of ordered) {
           if (entries.length >= REQUIRED_DISTRACTOR_COUNT) {
             break;
           }
-          occupy(text, lemmaByText.get(normalizeOptionKey(text)) ?? '');
+          if (candidate.lemma.toLowerCase() === word.lemma.toLowerCase()) {
+            continue;
+          }
+          const text = [...new Set(candidate.senses.map((sense) => sense.trim()).filter((sense) => sense !== ''))].join(
+            '；',
+          );
+          occupy(text, byLemma.get(candidate.lemma)?.lemma ?? candidate.lemma);
         }
       }
 
@@ -689,14 +687,23 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
 
       // 队列完全交给 core：排序、上限截断、屏蔽词过滤、确定性交错都在里面。
       // `newCount`/`reviewCount` 在卡片组装之前就已确定（取队列长度），不受后续组装/重排影响。
+      // 三种「重来」语义：
+      //   force + REVIEW = 强制复习（不看到期时间，把已学过的词再过一遍）
+      //   force         = 全量重学（当新词重排，词库全部词都出）
+      //   默认           = 正常今日队列
       const queue =
-        validated.force === true
-          ? buildDailyQueue([], unseenWordIds, { ...plan, dailyNewLimit: 500 }, validated.now, seed, {
+        validated.force === true && validated.scope === 'REVIEW'
+          ? buildDailyQueue(states, [], { ...plan, dailyNewLimit: 0, dailyReviewLimit: 500 }, validated.now, seed, {
               rotation: snapshot.rotationOrder,
+              ignoreDue: true,
             })
-          : buildDailyQueue(states, unseenWordIds, plan, validated.now, seed, {
-              rotation: snapshot.rotationOrder,
-            });
+          : validated.force === true
+            ? buildDailyQueue([], unseenWordIds, { ...plan, dailyNewLimit: 500 }, validated.now, seed, {
+                rotation: snapshot.rotationOrder,
+              })
+            : buildDailyQueue(states, unseenWordIds, plan, validated.now, seed, {
+                rotation: snapshot.rotationOrder,
+              });
 
       // 先组装卡片、后写会话行：卡片组装不依赖 `sessionId`，把“可能抛错的读组装”放到
       // 写库之前，避免组装中途失败留下一条永远空的会话行（那会被会话列表当成一次“0 作答”的历史）。
@@ -860,15 +867,11 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       if (word !== null) {
         if (mode === 'EN_TO_ZH') {
           const nonEmptySenses = senses.filter((sense) => sense.simpleZh.trim() !== '');
-          const snapshotSeed = parseSessionSeed(session.planSnapshotJson);
-          if (snapshotSeed !== null && nonEmptySenses.length > 0) {
-            correctAnswer =
-              nonEmptySenses[
-                selectAnswerSenseIndex(snapshotSeed, word.id, nonEmptySenses.length)
-              ]?.simpleZh.trim() ?? '';
-          } else {
-            correctAnswer = displayAnswerOf(toWordWithSenses(word, senses), mode);
-          }
+          // 与 buildCard 的口径保持一致：正确选项是**该词全部义项**的拼接
+          // （用户要求选项里能看到所有意思）。会话快照没有种子时同样回退全部义项。
+          const meanings = [...new Set(nonEmptySenses.map((sense) => sense.simpleZh.trim()))];
+          correctAnswer =
+            meanings.length > 0 ? meanings.join('；') : displayAnswerOf(toWordWithSenses(word, senses), mode);
         } else {
           correctAnswer = displayAnswerOf(toWordWithSenses(word, senses), mode);
         }
@@ -920,6 +923,14 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
       const totalAnswers = events.length;
       const reviewCount = totalAnswers - newCount;
       const endedAt = toIsoInstant(validated.now);
+      // 用户感知的「学习时长」= 在背单词界面的真实停留时间（含读释义、听发音、犹豫），
+      // 单纯累加每张卡的思考时长会严重偏小（读完释义停留的两分钟一秒都不算）。
+      // 口径：max(事件思考时长之和, 墙钟时长)，上限 4 小时防挂机刷统计。
+      const wallClockMs = Math.max(0, validated.now.getTime() - Date.parse(session.startedAt));
+      const effectiveDurationMs = Math.min(
+        Math.max(activeDurationMs, Number.isNaN(wallClockMs) ? 0 : wallClockMs),
+        4 * 60 * 60 * 1000,
+      );
 
       // 中断的会话（`endedAt === null`）也能结束：会话行其余字段原样写回，
       // 因此 `planSnapshotJson` / `startedAt` / `localDate` 不会被“当前设置”覆盖。
@@ -928,7 +939,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
         endedAt,
         newCount,
         reviewCount,
-        activeDurationMs,
+        activeDurationMs: effectiveDurationMs,
         revision: session.revision,
       });
 
@@ -943,7 +954,7 @@ export function createStudyService(options: StudyServiceOptions): StudyService {
         reviewCount,
         totalAnswers,
         correctCount,
-        activeDurationMs,
+        activeDurationMs: effectiveDurationMs,
       };
     },
 

@@ -2,6 +2,9 @@ node_modules/
 dist/
 build/
 coverage/
+
+# 安装包产物（electron-builder / dmg）。由 npm run package:exe / package:dmg 生成。
+release/
 .worktrees/
 .superpowers/
 *.log

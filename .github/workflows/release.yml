@@ -31,12 +31,6 @@ jobs:
   windows:
     name: Windows 安装包（NSIS .exe）
     runs-on: windows-latest
-    # 云公开配置通过 secret 注入。为什么要先落到 job 级 env：
-    # GitHub 不允许在 step 的 `if:` 里直接引用 `secrets` 上下文（官方明确要求
-    # 「先赋给 env，再用 env 判断」），而我们需要「secret 为空就跳过」这一步，
-    # 这样别人 fork 后没有 secret 也能正常构建，只是账号页显示云服务未配置。
-    env:
-      WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -50,14 +44,21 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 不用 step 级 `if: secrets.WB_CLOUD_ENV != ''`：GitHub Actions 的 `secrets`
+      # 上下文不能在 `if:` 里求值（会报 Unrecognized named-value: 'secrets'），
+      # 所以判空放在 bash 里。env 只挂在这一步，secret 不会泄露给其它步骤；
+      # 空值时整步照常成功并打印跳过原因，fork 后没有 secret 也能构建。
       - name: 注入云服务公开配置（.env.local）
-        if: env.WB_CLOUD_ENV != ''
         shell: bash
-        # 只回显「写入了几个键」，绝不回显内容：值里的 publishableKey 虽是公开值，
-        # 但日志里出现 key 会让人误以为泄露，也让 secret 扫描告警变噪音。
+        env:
+          WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
         run: |
-          printf '%s\n' "$WB_CLOUD_ENV" > .env.local
-          echo "已写入 .env.local（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键）"
+          if [ -n "$WB_CLOUD_ENV" ]; then
+            printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+            echo "已注入云服务公开配置（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键，不打印内容）"
+          else
+            echo "未配置 WB_CLOUD_ENV，跳过注入（账号页将显示云服务未配置）"
+          fi
 
       - name: 构建 web 与主进程产物
         run: npm run build
@@ -115,8 +116,6 @@ jobs:
     # 显式写 macos-14 而不是 macos-latest：dmg 的架构取决于 runner 架构，
     # macos-latest 迁移到别的架构时产物名会跟着变。这一份是**必跑**的。
     runs-on: macos-14
-    env:
-      WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -130,12 +129,18 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 判空必须放在 bash 里：`secrets` 上下文不能在 step 级 `if:` 中用。
       - name: 注入云服务公开配置（.env.local）
-        if: env.WB_CLOUD_ENV != ''
         shell: bash
+        env:
+          WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
         run: |
-          printf '%s\n' "$WB_CLOUD_ENV" > .env.local
-          echo "已写入 .env.local（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键）"
+          if [ -n "$WB_CLOUD_ENV" ]; then
+            printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+            echo "已注入云服务公开配置（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键，不打印内容）"
+          else
+            echo "未配置 WB_CLOUD_ENV，跳过注入（账号页将显示云服务未配置）"
+          fi
 
       - name: 构建 web 与主进程产物
         run: npm run build
@@ -177,8 +182,6 @@ jobs:
     # README 也如实写了「Intel 版由 CI 尽力构建」这个前提。
     runs-on: macos-13
     continue-on-error: true
-    env:
-      WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -192,12 +195,18 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 判空必须放在 bash 里：`secrets` 上下文不能在 step 级 `if:` 中用。
       - name: 注入云服务公开配置（.env.local）
-        if: env.WB_CLOUD_ENV != ''
         shell: bash
+        env:
+          WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
         run: |
-          printf '%s\n' "$WB_CLOUD_ENV" > .env.local
-          echo "已写入 .env.local（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键）"
+          if [ -n "$WB_CLOUD_ENV" ]; then
+            printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+            echo "已注入云服务公开配置（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键，不打印内容）"
+          else
+            echo "未配置 WB_CLOUD_ENV，跳过注入（账号页将显示云服务未配置）"
+          fi
 
       - name: 构建 web 与主进程产物
         run: npm run build

@@ -115,9 +115,9 @@ jobs:
 
   macos-arm64:
     name: macOS dmg（Apple Silicon）
-    # 显式写 macos-14 而不是 macos-latest：dmg 的架构取决于 runner 架构，
+    # 显式写 macos-15 而不是 macos-latest（macos-14 已于 2026-11-02 退役）：dmg 的架构取决于 runner 架构，
     # macos-latest 迁移到别的架构时产物名会跟着变。这一份是**必跑**的。
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -179,10 +179,10 @@ jobs:
 
   macos-x64:
     name: macOS dmg（Intel）
-    # Intel 包为「尽力产出」：macos-13 是 GitHub 上逐步退役的 Intel 镜像，随时可能不可用。
+    # Intel 包为「尽力产出」：macos-15-intel 是 GitHub 的 Intel 镜像，随镜像调整可能不可用。
     # 因此它不阻塞发布——标 continue-on-error，能出包就上传，出不来只在日志留痕；
     # README 也如实写了「Intel 版由 CI 尽力构建」这个前提。
-    runs-on: macos-13
+    runs-on: macos-15-intel
     continue-on-error: true
     steps:
       - name: 检出代码

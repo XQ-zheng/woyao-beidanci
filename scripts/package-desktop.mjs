@@ -30,9 +30,16 @@
  *
  * 用法：
  *   npm run package:exe                      # Windows：产出 release/woyao-beidanci-Setup-<ver>.exe
- *   npm run package:dmg                      # macOS：产出 release/woyao-beidanci-<ver>.dmg
+ *   npm run package:dmg                      # macOS：产出 release/woyao-beidanci-<ver>-<arch>.dmg
  *   node scripts/package-desktop.mjs --target=dir     # 只组装、不打包（排查用）
  *   node scripts/package-desktop.mjs --skip-build     # 复用已有 dist 产物
+ *   node scripts/package-desktop.mjs --with-cloud     # 自用分发：把 .env.local 的云配置嵌进包
+ *
+ * 发布包与自用包的两条硬差别（都由本脚本保证，别改成“看有没有文件就写”）：
+ * - **不写** `resources/data-location.json`：运行期的 `resolveDataDir()` 读到它就不再
+ *   校验盘符，把打包机的 `E:\...` 烤进去等于让所有没有 E 盘的用户装完打不开；
+ * - **不嵌** `resources/cloud-config.json`：仓库里没有 key、CI 也没有，
+ *   “有就嵌”会让同一版本在不同机器上产出不同内容的安装包。
  */
 import { spawnSync } from 'node:child_process';
 import { builtinModules, createRequire } from 'node:module';
@@ -117,7 +124,7 @@ const VALID_TARGETS = new Set(['exe', 'dmg', 'dir']);
  * 解析命令行开关。
  *
  * @param {readonly string[]} argv 进程参数（不含 node 与脚本名）。
- * @returns {{target: string, skipBuild: boolean}} 开关。
+ * @returns {{target: string, skipBuild: boolean, withCloud: boolean}} 开关。
  */
 function parseArgs(argv) {
   let target = process.platform === 'darwin' ? 'dmg' : 'exe';
@@ -129,7 +136,11 @@ function parseArgs(argv) {
   if (!VALID_TARGETS.has(target)) {
     throw new Error(`未知的 --target=${target}，可选：${[...VALID_TARGETS].join(' / ')}`);
   }
-  return { target, skipBuild: argv.includes('--skip-build') };
+  return {
+    target,
+    skipBuild: argv.includes('--skip-build'),
+    withCloud: argv.includes('--with-cloud'),
+  };
 }
 
 /**
@@ -658,44 +669,63 @@ function assembleAppResources(resourcesDir, closure) {
 }
 
 /**
- * 写入数据位置引导文件（仅 Windows 且本机确实有 E 盘时）。
+ * 确保产物里**没有**数据位置引导文件 `resources/data-location.json`。
  *
- * 运行期 `resolveDataDir()` 自己也会检查 E 盘，所以没有这个文件≠数据一定去 C 盘；
- * 这里写它只是把“打包机的选择”固化下来，和 `package-win.mjs` 的行为一致。
+ * 为什么发布包必须没有它（P0 事故预防）：
+ * `apps/electron/src/main/dataLocation.ts` 的 `resolveDataDir()` 一旦读到引导文件就
+ * **无条件返回该路径**，不校验盘符是否存在/可写；随后 `openDatabase()` 直接
+ * `new Database(<userData>/woyao.sqlite3)`，目录不存在就是 SQLITE_CANTOPEN。
+ * 也就是说：谁在打包机上把 `E:\我要背单词——相关文件夹` 烤进安装包，所有没有 E 盘
+ * 的用户（绝大多数）装完就打不开应用。
+ *
+ * 正确行为由运行期负责：`resolveDataDir()` 在**没有**引导文件时会自己判断
+ * `existsSync('E:\\') && ensureWritableDir(...)`，不满足就用 Electron 默认的
+ * `%APPDATA%\woyao-beidanci`。发布包要做的事就是“什么都不写”。
+ *
+ * 想固化数据目录的开发者请用 `scripts/package-win.mjs`（本机自用安装），
+ * 那条路会照旧写这个文件。
  *
  * @param {string} resourcesDir 目标 `resources` 目录。
  */
-function writeDataLocationHint(resourcesDir) {
+function ensureNoDataLocationHint(resourcesDir) {
   const target = path.join(resourcesDir, 'data-location.json');
-  if (process.platform !== 'win32') {
-    console.log('  非 Windows：不写数据位置引导文件（数据默认在用户目录）');
-    return;
+  if (existsSync(target)) {
+    rmSync(target, { force: true });
+    console.log('  已删除残留的 data-location.json（发布包不固化数据目录）');
   }
-  if (!existsSync('E:\\')) {
-    console.log('  本机没有 E 盘：不写引导文件，运行期自动退回用户数据目录');
-    return;
-  }
-  const dataDir = 'E:\\我要背单词——相关文件夹';
-  writeFileSync(target, `${JSON.stringify({ dataDir }, null, 2)}\n`, 'utf8');
-  console.log(`  已写引导文件：数据默认存到 ${dataDir}`);
+  console.log('  数据目录：不写引导文件，由运行期按 E 盘是否存在自动选择');
 }
 
 /**
- * 写入云公共配置（有 `.env.local` 才写；只写进产物，绝不进仓库）。
+ * 处理云公共配置（默认**不**嵌入，需显式 `--with-cloud` 才写）。
+ *
+ * 默认不嵌入的理由：
+ * - 仓库里不能有 key，GitHub Actions 上也没有 `.env.local`；如果“有就嵌、没有就跳过”，
+ *   同一个版本会因为打包机不同而产出内容不同的安装包，Release 资产不可复现；
+ * - README 明确写了「官方 Release 安装包不含云服务配置」，产物必须与这句话一致。
+ *
+ * 需要给内网/自用分发一份带登录能力的包时：
+ *   node scripts/package-desktop.mjs --target=exe --with-cloud
  *
  * @param {string} resourcesDir 目标 `resources` 目录。
+ * @param {boolean} withCloud 是否嵌入云公共配置。
  */
-function writeCloudConfig(resourcesDir) {
+function applyCloudConfig(resourcesDir, withCloud) {
+  const target = path.join(resourcesDir, 'cloud-config.json');
+  if (!withCloud) {
+    if (existsSync(target)) {
+      rmSync(target, { force: true });
+    }
+    console.log('  云配置：不嵌入（发布包固定行为；需要登录能力请加 --with-cloud 自行构建）');
+    return;
+  }
   const { config, reason } = readCloudConfigIfAny();
   console.log(`  云配置：${reason}`);
   if (config === null) {
     return;
   }
-  writeFileSync(
-    path.join(resourcesDir, 'cloud-config.json'),
-    `${JSON.stringify(config, null, 2)}\n`,
-    'utf8',
-  );
+  writeFileSync(target, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  console.log('  已写入 resources/cloud-config.json（publishableKey 为公开值，不打印）');
 }
 
 /**
@@ -1006,8 +1036,8 @@ async function main() {
     mkdirSync(stageRoot, { recursive: true });
     resourcesDir = process.platform === 'darwin' ? assembleMacApp() : assembleWindowsApp();
     assembleAppResources(resourcesDir, closure);
-    writeCloudConfig(resourcesDir);
-    writeDataLocationHint(resourcesDir);
+    applyCloudConfig(resourcesDir, options.withCloud);
+    ensureNoDataLocationHint(resourcesDir);
     console.log(`  应用目录：${formatSize(sizeOf(stageRoot))}`);
   });
 
@@ -1037,10 +1067,10 @@ async function main() {
 }
 
 /**
- * 打印产物信息（路径、体积、sha256），并统一重命名为“版本无关”的稳定名。
+ * 打印产物信息（路径、体积、sha256），并写出同名 `.sha256` 校验文件。
  *
- * 为什么要稳定名：README 里的下载链接与 CI 上传的资产名必须对得上，
- * 版本号天天变，用户不该为此改书签。
+ * 注意：产物文件名**带版本号**（`woyao-beidanci-Setup-<version>.exe`），
+ * 不做“重命名成固定名”这种动作——Release 资产必须能一眼看出是哪一版。
  *
  * @param {string} artifactPath 产物路径。
  * @param {string} label 人类可读的产物类型。

@@ -1,0 +1,238 @@
+# 发布流水线：打 tag（v* / V*）或手动触发时，分别构建 Windows 安装包与 macOS dmg，
+# 并把产物上传到对应 tag 的 GitHub Release。
+#
+# 三条设计原则：
+# 1. **没有任何密钥**。云服务配置走 `.env.local`，它不入库；CI 上没有这个文件，
+#    web 构建按“云未配置”降级（账号页显示未配置，本地学习功能完全不受影响）。
+# 2. **不隐式发布**。不使用 electron-builder 的 `--publish always`，上传只由下面的
+#    `softprops/action-gh-release` 显式完成，权限收紧到 `contents: write`。
+# 3. **平台各自构建**。Windows 产物只能在 Windows 上产、dmg 只能在 macOS 上产；
+#    每个 job 只做自己平台的事，失败互不牵连（macOS Intel 任务标了 continue-on-error）。
+name: Release
+
+on:
+  push:
+    tags:
+      # GitHub 的 tag 通配符**区分大小写**，而本项目的发布 tag 是 `V1.0`（大写 V）。
+      # 只写 'v*' 的话推 V1.0 不会触发，macOS dmg 就永远产不出来；
+      # 两个都列出来，同时避免用 '*'（那会让任何 tag 都触发整套构建）。
+      - 'v*'
+      - 'V*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows 安装包（NSIS .exe）
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 不用 step 级 `if: secrets.WB_CLOUD_ENV != ''`：GitHub Actions 的 `secrets`
+      # 上下文不能在 `if:` 里求值（会报 Unrecognized named-value: 'secrets'），
+      # 所以判空放在 bash 里。env 只挂在这一步，secret 不会泄露给其它步骤；
+      # 空值时整步照常成功并打印跳过原因，fork 后没有 secret 也能构建。
+      - name: 注入云服务公开配置（.env.local）
+        shell: bash
+        env:
+          WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
+        run: |
+          if [ -n "$WB_CLOUD_ENV" ]; then
+            printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+            echo "已注入云服务公开配置（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键，不打印内容）"
+          else
+            echo "未配置 WB_CLOUD_ENV，跳过注入（账号页将显示云服务未配置）"
+          fi
+
+      - name: 构建 web 与主进程产物
+        run: npm run build
+
+      - name: 生成 NSIS 安装包（内嵌云公开配置）
+        run: npm run package:exe -- --with-cloud
+
+      - name: 汇总产物信息
+        shell: bash
+        run: |
+          ls -l release
+          sha256sum release/*.exe || true
+
+      - name: 上传产物（workflow artifact，便于排查）
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            release/*.exe
+            release/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传到 Release
+        # 不用 startsWith(github.ref, 'refs/tags/v')：GitHub 的 ref 比较是大小写敏感的，
+        # 那样推 `V1.0` 时这一步会被跳过（构建白跑）。本 workflow 只在打 tag 或手动
+        # 触发时运行，手动触发时 github.ref 是分支引用，下面的判断自然不成立。
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          # 必须显式指向当前 tag（如 `V1.0`），否则 action 可能按 tag 名新建一个
+          # 小写的 Release，产物就挂到了另一个 Release 上。
+          tag_name: ${{ github.ref_name }}
+          files: |
+            release/*.exe
+            release/*.exe.sha256
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          body: |
+            ## 我要背单词 ${{ github.ref_name }}
+
+            > **重要提示**
+            > - 手机号 + 短信验证码登录目前有 Bug，**不可用**；**请用「邮箱验证码」登录**（账号页默认停在手机 Tab，需手动切换）。
+            > - 安装包**已内置云服务公开配置**（`wbpk_` 开头的 publishable key，设计上就是随客户端分发的公开值），
+            >   所以账号页不再显示「云服务未配置」，**请用「邮箱验证码」登录**；但该链路端到端未实测
+            >   （没有跑通「收码 → 登录成功」），能不能登进去不作承诺，详见 README「已知不足」第 17 条；
+            >   数据安全由服务端行级权限（RLS）保证，请不要把该 key 当密钥。
+            > - **不登录也能完整使用软件内的全部功能**：词库、学习记录、错词、设置、统计全部存在本地。
+
+            - Windows：下载 `woyao-beidanci-Setup-*.exe`，双击安装（未签名，SmartScreen 提示时点「更多信息 → 仍要运行」）。
+            - macOS：下载 `woyao-beidanci-*-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-*-x64.dmg`（Intel），
+              **未签名/未公证，且从未在 macOS 真机上验证过**，能否启动不作保证；首次打开需「右键 → 打开」。
+            - Linux / Android / iOS：暂不提供产物，原因见 README 的平台支持矩阵。
+
+  macos-arm64:
+    name: macOS dmg（Apple Silicon）
+    # 显式写 macos-14 而不是 macos-latest：dmg 的架构取决于 runner 架构，
+    # macos-latest 迁移到别的架构时产物名会跟着变。这一份是**必跑**的。
+    runs-on: macos-14
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 判空必须放在 bash 里：`secrets` 上下文不能在 step 级 `if:` 中用。
+      - name: 注入云服务公开配置（.env.local）
+        shell: bash
+        env:
+          WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
+        run: |
+          if [ -n "$WB_CLOUD_ENV" ]; then
+            printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+            echo "已注入云服务公开配置（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键，不打印内容）"
+          else
+            echo "未配置 WB_CLOUD_ENV，跳过注入（账号页将显示云服务未配置）"
+          fi
+
+      - name: 构建 web 与主进程产物
+        run: npm run build
+
+      - name: 生成 dmg（hdiutil，未签名，内嵌云公开配置）
+        run: npm run package:dmg -- --with-cloud
+
+      - name: 汇总产物信息
+        run: |
+          ls -l release
+          shasum -a 256 release/*.dmg || true
+
+      - name: 上传产物（workflow artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-arm64
+          path: |
+            release/*.dmg
+            release/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传到 Release
+        # 大小写无关地判断「是不是 tag 触发」（推 `V1.0` 时 refs/tags/v* 的写法匹配不上）。
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          # 传到 `V1.0` 这个既有 tag 的 Release，不新建。
+          tag_name: ${{ github.ref_name }}
+          files: |
+            release/*.dmg
+            release/*.dmg.sha256
+          fail_on_unmatched_files: false
+
+  macos-x64:
+    name: macOS dmg（Intel）
+    # Intel 包为「尽力产出」：macos-13 是 GitHub 上逐步退役的 Intel 镜像，随时可能不可用。
+    # 因此它不阻塞发布——标 continue-on-error，能出包就上传，出不来只在日志留痕；
+    # README 也如实写了「Intel 版由 CI 尽力构建」这个前提。
+    runs-on: macos-13
+    continue-on-error: true
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 判空必须放在 bash 里：`secrets` 上下文不能在 step 级 `if:` 中用。
+      - name: 注入云服务公开配置（.env.local）
+        shell: bash
+        env:
+          WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
+        run: |
+          if [ -n "$WB_CLOUD_ENV" ]; then
+            printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+            echo "已注入云服务公开配置（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键，不打印内容）"
+          else
+            echo "未配置 WB_CLOUD_ENV，跳过注入（账号页将显示云服务未配置）"
+          fi
+
+      - name: 构建 web 与主进程产物
+        run: npm run build
+
+      - name: 生成 dmg（hdiutil，未签名，内嵌云公开配置）
+        run: npm run package:dmg -- --with-cloud
+
+      - name: 上传产物（workflow artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-x64
+          path: |
+            release/*.dmg
+            release/*.dmg.sha256
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 上传到 Release
+        # 同前：tag 判断必须大小写无关，否则 `V1.0` 触发时这一步会被跳过。
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            release/*.dmg
+            release/*.dmg.sha256
+          fail_on_unmatched_files: false

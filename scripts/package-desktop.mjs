@@ -46,6 +46,7 @@ import { spawnSync } from 'node:child_process';
 import { builtinModules, createRequire } from 'node:module';
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -760,6 +761,61 @@ function assembleWindowsApp() {
 }
 
 /**
+ * 把 `Electron.app` 原样复制成目标 bundle（保留符号链接）。
+ *
+ * 为什么不能用上面的 `copyTree`（逐文件 `copyFileSync`）：macOS 的 `.framework` 目录里
+ * `Resources`、`Versions/Current` 等都是**指向目录的符号链接**，`copyFileSync` 遇到
+ * 「链接 → 目录」会抛 `ENOTSUP: operation not supported on socket, copyfile`
+ * （CI `V1.0` 上的实际报错，第一轮三个 macOS job 全挂在这里）。
+ *
+ * 所以改用 `fs.cpSync(..., { recursive: true, dereference: false, verbatimSymlinks: true })`：
+ * - `dereference: false`：把符号链接当链接复制，不展开成实体目录（framework 的版本结构
+ *   靠链接表达，展开既多出几百 MB 副本，又会破坏 bundle 内部的相对引用）；
+ * - `verbatimSymlinks: true`：保留链接里写的**原始相对目标**（如 `Versions/Current` → `A`）。
+ *   Node 默认会把链接目标改写成绝对路径，bundle 一旦被搬走/改名就断了。
+ *
+ * 兜底：若 `cpSync` 仍失败（个别 macOS/Node 组合的边缘情况），改用系统自带的 `ditto`
+ * ——它就是 Apple 用来无损复制 bundle 的命令（保留符号链接与扩展属性）。它只能在 macOS
+ * 上用，属不可移植的兜底，因此只在 `cpSync` 抛错时走。
+ *
+ * 代价：`cpSync` 是同步一次性复制，拿不到 `copyTree` 那种逐 200 个文件的进度输出；
+ * 750MB 量级通常十几秒内结束，所以这里只打印耗时与最终体积。
+ *
+ * @param {string} source 源 `Electron.app` 目录。
+ * @param {string} destination 目标 `.app` 目录。
+ * @returns {void}
+ * @throws {Error} `cpSync` 与 `ditto` 都失败时抛出。
+ */
+function copyMacBundle(source, destination) {
+  const startedAt = Date.now();
+  try {
+    cpSync(source, destination, {
+      recursive: true,
+      dereference: false,
+      verbatimSymlinks: true,
+      force: true,
+    });
+    console.log(`    已复制（cpSync，${((Date.now() - startedAt) / 1000).toFixed(1)}s）`);
+    return;
+  } catch (error) {
+    const reason = error instanceof Error ? (error.code ?? error.message) : String(error);
+    console.log(`  cpSync 复制失败（${reason}），改用 ditto 兜底…`);
+  }
+  // ditto 是「合并」语义：先清掉 cpSync 可能留下的半成品，避免新旧文件混在一个 bundle 里。
+  rmSync(destination, { recursive: true, force: true });
+  const result = spawnSync('ditto', [source, destination], { shell: false, stdio: 'inherit' });
+  if (result.error !== undefined) {
+    throw new Error(`ditto 无法执行：${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `复制 Electron.app 失败：cpSync 与 ditto 均未成功（ditto 退出码 ${result.status}）。`,
+    );
+  }
+  console.log(`    已复制（ditto 兜底，${((Date.now() - startedAt) / 1000).toFixed(1)}s）`);
+}
+
+/**
  * 把 `Electron.app` 搬成 `我要背单词.app`：改 Info.plist、改可执行文件名、塞 resources。
  *
  * macOS 的 `.app` 是“目录当程序”，所以要点只有三个：
@@ -780,9 +836,8 @@ function assembleMacApp() {
   }
   const appBundle = path.join(stageRoot, MAC_BUNDLE_NAME);
   console.log(`  复制 Electron.app（${formatSize(sizeOf(electronAppDir))}）…`);
-  copyTree(electronAppDir, appBundle, undefined, (files, bytes) => {
-    console.log(`    已复制 ${files} 个文件 / ${formatSize(bytes)}`);
-  });
+  copyMacBundle(electronAppDir, appBundle);
+  console.log(`  复制完成：${formatSize(sizeOf(appBundle))}`);
 
   const contentsDir = path.join(appBundle, 'Contents');
   const macOsDir = path.join(contentsDir, 'MacOS');
@@ -904,7 +959,13 @@ function tryCreateIcns(pngPath, icnsPath) {
  * 关键参数：
  * - `--prepackaged`：直接复用本脚本组装的目录，electron-builder 不下载 Electron、
  *   不重新收拾 monorepo 文件；
- * - `--config`：见 `electron-builder.config.cjs`（`asar: false`，原生模块保持实体文件）。
+ * - `--config`：见 `electron-builder.config.cjs`（`asar: false`，原生模块保持实体文件）；
+ * - `--publish never`：**必须显式传**。electron-builder 26 在「带 `--prepackaged` 且
+ *   当前提交打了 tag」时会**隐式触发发布**（日志原话：Implicit publishing triggered by
+ *   git tag），然后因为没有 `GH_TOKEN` 直接失败：
+ *   `GitHub Personal Access Token is not set ... env "GH_TOKEN"`。
+ *   本机没有 tag，所以这个失败只在 CI（tag `V1.0`）里复现，本地永远看不到。
+ *   发布交给 workflow 自己的 `softprops/action-gh-release`，这里只负责出包。
  *
  * @returns {Promise<string>} 生成的 `.exe` 绝对路径。
  */
@@ -932,6 +993,9 @@ async function buildWindowsInstaller() {
       `--${process.arch === 'arm64' ? 'arm64' : 'x64'}`,
       '--config',
       configPath,
+      // 见上方注释：tag 上不显式关掉，electron-builder 会隐式发布并因缺 GH_TOKEN 失败。
+      '--publish',
+      'never',
     ],
     { shell: false },
   );

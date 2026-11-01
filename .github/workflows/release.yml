@@ -1,0 +1,173 @@
+# 发布流水线：打 tag（v*）或手动触发时，分别构建 Windows 安装包与 macOS dmg，
+# 并把产物上传到对应 tag 的 GitHub Release。
+#
+# 三条设计原则：
+# 1. **没有任何密钥**。云服务配置走 `.env.local`，它不入库；CI 上没有这个文件，
+#    web 构建按“云未配置”降级（账号页显示未配置，本地学习功能完全不受影响）。
+# 2. **不隐式发布**。不使用 electron-builder 的 `--publish always`，上传只由下面的
+#    `softprops/action-gh-release` 显式完成，权限收紧到 `contents: write`。
+# 3. **平台各自构建**。Windows 产物只能在 Windows 上产、dmg 只能在 macOS 上产；
+#    每个 job 只做自己平台的事，失败互不牵连（macOS Intel 任务标了 continue-on-error）。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows 安装包（NSIS .exe）
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 web 与主进程产物
+        run: npm run build
+
+      - name: 生成 NSIS 安装包
+        run: npm run package:exe
+
+      - name: 汇总产物信息
+        shell: bash
+        run: |
+          ls -l release
+          sha256sum release/*.exe || true
+
+      - name: 上传产物（workflow artifact，便于排查）
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            release/*.exe
+            release/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.exe.sha256
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          body: |
+            ## 我要背单词 ${{ github.ref_name }}
+
+            > **重要提示**：手机号 + 短信验证码登录目前有 Bug、不可用，请使用**邮箱验证码**登录；
+            > 不登录也能完整使用软件内的全部功能（数据全部存在本地）。
+
+            - Windows：下载 `woyao-beidanci-Setup-*.exe`，双击安装（未签名，SmartScreen 提示时点「更多信息 → 仍要运行」）。
+            - macOS：下载 `woyao-beidanci-*-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-*-x64.dmg`（Intel），
+              未签名/未公证，首次打开需「右键 → 打开」。
+            - Linux / Android / iOS：暂不提供产物，原因见 README 的平台支持矩阵。
+
+  macos-arm64:
+    name: macOS dmg（Apple Silicon）
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 web 与主进程产物
+        run: npm run build
+
+      - name: 生成 dmg（hdiutil，未签名）
+        run: npm run package:dmg
+
+      - name: 汇总产物信息
+        run: |
+          ls -l release
+          shasum -a 256 release/*.dmg || true
+
+      - name: 上传产物（workflow artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-arm64
+          path: |
+            release/*.dmg
+            release/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.dmg
+            release/*.dmg.sha256
+          fail_on_unmatched_files: false
+
+  macos-x64:
+    name: macOS dmg（Intel）
+    # Intel 机器（macos-13）在 GitHub 上属于逐步退役的镜像。它挂了不该拖垮整个发布：
+    # 标 continue-on-error，能出包就上传，出不来就在日志里留痕，README 也如实写了这个前提。
+    runs-on: macos-13
+    continue-on-error: true
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 web 与主进程产物
+        run: npm run build
+
+      - name: 生成 dmg（hdiutil，未签名）
+        run: npm run package:dmg
+
+      - name: 上传产物（workflow artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-x64
+          path: |
+            release/*.dmg
+            release/*.dmg.sha256
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 上传到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.dmg
+            release/*.dmg.sha256
+          fail_on_unmatched_files: false

@@ -85,7 +85,7 @@
 
 > **先说清楚：macOS 产物从未被验证过。** 本项目只在 Windows 上有真实的构建、安装与启动记录；dmg 由 GitHub Actions 在 macOS 机器上按同一套脚本组装（复制 `Electron.app` → 改 Info.plist 与二进制名 → `hdiutil` 打包），但**开发者手上没有 macOS 机器，也没有跑过一次 CI**。也就是说：产物可能存在、可能直接跑不起来，下载前请知悉这是「尽力构建」而非「已验证可用」。
 
-1. 到 [Releases](../../releases) 下载对应架构的 dmg：`woyao-beidanci-x.y.z-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-x.y.z-x64.dmg`（Intel）。是否真的存在取决于 CI 那次构建有没有成功（Intel 那份用的是逐步退役的 `macos-13` 镜像，可能直接不可用）。
+1. 到 [Releases](../../releases) 下载对应架构的 dmg：`woyao-beidanci-x.y.z-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-x.y.z-x64.dmg`（Intel）。是否真的存在取决于 CI 那次构建有没有成功（Intel 那份用 `macos-15-intel` 镜像构建，可能因镜像调整而缺失）。
 2. 打开 dmg，把「我要背单词」拖进「应用程序」。
 3. **本应用未做苹果代码签名与公证（notarization）**，首次打开会被 Gatekeeper 拦下。解决方法任选一个：
    - 在 Finder 里**右键点击应用图标 → 打开 → 再点「打开」**；

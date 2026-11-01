@@ -44,6 +44,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # electron@45 这个包的 package.json 里**没有** postinstall，`npm ci` 不会去下载
+      # 对应平台的运行时；而打包脚本要从 node_modules/electron/dist 复制运行时。
+      # 所以显式跑一次官方安装脚本（首次约 30-60s，随后走 actions 缓存目录）。
+      - name: 下载 Electron 运行时
+        shell: bash
+        run: node node_modules/electron/install.js
+
       # 不用 step 级 `if: secrets.WB_CLOUD_ENV != ''`：GitHub Actions 的 `secrets`
       # 上下文不能在 `if:` 里求值（会报 Unrecognized named-value: 'secrets'），
       # 所以判空放在 bash 里。env 只挂在这一步，secret 不会泄露给其它步骤；
@@ -131,6 +138,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # electron@45 这个包的 package.json 里**没有** postinstall，`npm ci` 不会去下载
+      # 对应平台的运行时；而打包脚本要从 node_modules/electron/dist 复制运行时。
+      # 所以显式跑一次官方安装脚本（首次约 30-60s，随后走 actions 缓存目录）。
+      - name: 下载 Electron 运行时
+        shell: bash
+        run: node node_modules/electron/install.js
+
       # 判空必须放在 bash 里：`secrets` 上下文不能在 step 级 `if:` 中用。
       - name: 注入云服务公开配置（.env.local）
         shell: bash
@@ -196,6 +210,13 @@ jobs:
 
       - name: 安装依赖
         run: npm ci
+
+      # electron@45 这个包的 package.json 里**没有** postinstall，`npm ci` 不会去下载
+      # 对应平台的运行时；而打包脚本要从 node_modules/electron/dist 复制运行时。
+      # 所以显式跑一次官方安装脚本（首次约 30-60s，随后走 actions 缓存目录）。
+      - name: 下载 Electron 运行时
+        shell: bash
+        run: node node_modules/electron/install.js
 
       # 判空必须放在 bash 里：`secrets` 上下文不能在 step 级 `if:` 中用。
       - name: 注入云服务公开配置（.env.local）

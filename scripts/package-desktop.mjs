@@ -978,7 +978,7 @@ async function main() {
   }
 
   console.log(`仓库：${repoRoot}`);
-  console.log(`平台：${platformKey}　目标：${options.target}`);
+  console.log(`平台：${platformKey} / 目标：${options.target}`);
 
   if (options.skipBuild) {
     console.log('\n▶ 跳过构建（--skip-build），复用现有产物');

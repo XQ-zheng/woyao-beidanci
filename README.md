@@ -83,9 +83,11 @@
 
 ### macOS（Apple Silicon / Intel）
 
-> **先说清楚：macOS 产物从未被验证过。** 本项目只在 Windows 上有真实的构建、安装与启动记录；dmg 由 GitHub Actions 在 macOS 机器上按同一套脚本组装（复制 `Electron.app` → 改 Info.plist 与二进制名 → `hdiutil` 打包），但**开发者手上没有 macOS 机器，也没有跑过一次 CI**。也就是说：产物可能存在、可能直接跑不起来，下载前请知悉这是「尽力构建」而非「已验证可用」。
+> **先说清楚：macOS 产物已构建成功，但从没在任何一台真实 Mac 上打开过。**
+> 两个 dmg 由 GitHub Actions 在 macOS 15 机器上按同一套脚本组装（复制 `Electron.app` → 改 Info.plist 与二进制名 → `hdiutil` 打包），CI 已跑通并把产物传到了本页 Releases（2026-11-01）。
+> 但开发者手上没有 macOS 机器，**没有任何人双击打开过它**——「能被构建出来」不等于「能正常启动」。下载前请知悉：这是「构建通过」，不是「验证可用」。打不开请到 Issues 反馈。
 
-1. 到 [Releases](../../releases) 下载对应架构的 dmg：`woyao-beidanci-x.y.z-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-x.y.z-x64.dmg`（Intel）。是否真的存在取决于 CI 那次构建有没有成功（Intel 那份用 `macos-15-intel` 镜像构建，可能因镜像调整而缺失）。
+1. 到 [Releases](../../releases) 下载对应架构的 dmg：`woyao-beidanci-1.0.0-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-1.0.0-x64.dmg`（Intel）。**两个架构都已构建成功**；Intel 那份用 `macos-15-intel` 镜像构建，若该镜像将来调整，可能不再产出。
 2. 打开 dmg，把「我要背单词」拖进「应用程序」。
 3. **本应用未做苹果代码签名与公证（notarization）**，首次打开会被 Gatekeeper 拦下。解决方法任选一个：
    - 在 Finder 里**右键点击应用图标 → 打开 → 再点「打开」**；
@@ -100,7 +102,7 @@
 | 平台 | 状态 | 安装包 |
 | --- | --- | --- |
 | Windows 10 / 11 x64 | ✅ 支持（已构建；载荷级验证：二进制可执行、原生模块可加载、资源齐全） | `woyao-beidanci-Setup-x.y.z.exe`（NSIS 安装版） |
-| macOS（Apple Silicon / Intel） | ⚠️ 未验证（未签名、未公证、未跑过真机） | `woyao-beidanci-x.y.z-arm64.dmg` / `woyao-beidanci-x.y.z-x64.dmg`——由 CI 尽力构建，可能缺失或无法启动 |
+| macOS（Apple Silicon / Intel） | ⚠️ 已构建、未真机验证（未签名、未公证） | `woyao-beidanci-x.y.z-arm64.dmg` / `woyao-beidanci-x.y.z-x64.dmg`——两个架构均由 CI 构建成功，但没有任何人在真机上打开验证过 |
 | Android | ❌ 暂不支持 | 无。应用基于 Electron 桌面架构，主进程承载 SQLite、文件系统与 IPC 桥接；移动端需要重写存储层（换 `@capacitor-community/sqlite`）与整套原生桥，已列入 v1.1 路线图。 |
 | iOS | ❌ 暂不支持 | 无。技术原因同 Android，另外还需要 Apple 开发者账号才能签名分发。 |
 | Linux | ❌ 暂未验证 | 无。源码理论上可构建，但没有做过任何验证，因此不提供产物、也不声称支持。 |
@@ -124,7 +126,7 @@
 11. **没有系统通知提醒**：设置里能配学习时段，但到点不会弹系统通知（该能力未实现）。
 12. **安装包内含客户端 key（可公开，但不是零风险）**：官方安装包的 `resources/cloud-config.json` 里有 `wbpk_` 开头的 publishable key 与 endpoint，**任何人解包都能看到它**——这是设计使然（客户端 key 必须随客户端分发），数据安全依赖服务端行级权限（RLS）与用户鉴权，请不要把它当成密钥，也不要拿它去调用服务端管理接口。你自己 fork 构建的包同理。
 13. **云同步缺失导致「记住登录」只能单机生效**，换机器等于重新开始。
-14. **macOS 产物从未被验证**：没有 macOS 机器、也没跑过 CI，dmg 只是「尽力构建」，不保证存在、也不保证能启动（详见上文 macOS 小节）。
+14. **macOS 产物没有真机验证**：CI 已经能把两个架构的 dmg 构建出来（2026-11-01 跑通），但开发者没有 macOS 机器，**没有任何人双击打开过**，因此「能构建」不等于「能启动」，详见上文 macOS 小节。
 15. **数据目录只在启动时判断一次**：应用启动时若检测到 E 盘就把数据放过去；如果用户之后把 E 盘拔了/改名，启动会因为数据目录不存在而失败——目前没有「引导路径失效自动回退」的保护。
 16. **验证程度有限**：Windows 产物做到的是**载荷级验证**（二进制可执行、`better-sqlite3` 能在 Electron 45 ABI 下加载、字体/OCR/词库/LICENSE 齐全），**没有**在干净机器上跑完整的「双击安装 → 启动 → 点一遍功能」流程；安装器也没有做静默安装验证。macOS 产物连载荷级验证都没有。
 17. **登录链路未做端到端验证**：本机 `logs/auth-http.log`（2026-10-28，三次尝试）显示发码与校验码服务端均返回 200，但 `signin` 连续 401、`signup` 409，且**没有任何一次 email 渠道请求**——即手机路径的 Bug 有实证，邮箱路径从未跑通「收码 → 登录成功」。`loadCloudConfig()` 也无单测。若邮箱登录失败，请先当作已知问题，不要当成你的操作问题。
@@ -235,7 +237,7 @@ npm run package:exe -- --with-cloud    # 读 .env.local，写进 resources/cloud
 
 ## 路线图（Roadmap）
 
-**v1.0（当前，版本号 1.0.0）**：Windows 安装包（已构建、载荷级验证）；macOS dmg 由 CI 尽力构建、**尚未验证**。本地学习闭环、内置四/六/考研词库、批量导入、错词与历史统计、水平评估。
+**v1.0（当前，版本号 1.0.0）**：Windows 安装包（已构建、载荷级验证）；macOS apple silicon / intel 两个 dmg 由 CI 构建成功、**尚未真机验证**。本地学习闭环、内置四/六/考研词库、批量导入、错词与历史统计、水平评估。
 
 **v1.1（计划）**
 

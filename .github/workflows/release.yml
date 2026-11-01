@@ -31,6 +31,12 @@ jobs:
   windows:
     name: Windows 安装包（NSIS .exe）
     runs-on: windows-latest
+    # 云公开配置通过 secret 注入。为什么要先落到 job 级 env：
+    # GitHub 不允许在 step 的 `if:` 里直接引用 `secrets` 上下文（官方明确要求
+    # 「先赋给 env，再用 env 判断」），而我们需要「secret 为空就跳过」这一步，
+    # 这样别人 fork 后没有 secret 也能正常构建，只是账号页显示云服务未配置。
+    env:
+      WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -44,11 +50,20 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 注入云服务公开配置（.env.local）
+        if: env.WB_CLOUD_ENV != ''
+        shell: bash
+        # 只回显「写入了几个键」，绝不回显内容：值里的 publishableKey 虽是公开值，
+        # 但日志里出现 key 会让人误以为泄露，也让 secret 扫描告警变噪音。
+        run: |
+          printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+          echo "已写入 .env.local（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键）"
+
       - name: 构建 web 与主进程产物
         run: npm run build
 
-      - name: 生成 NSIS 安装包
-        run: npm run package:exe
+      - name: 生成 NSIS 安装包（内嵌云公开配置）
+        run: npm run package:exe -- --with-cloud
 
       - name: 汇总产物信息
         shell: bash
@@ -85,9 +100,9 @@ jobs:
             ## 我要背单词 ${{ github.ref_name }}
 
             > **重要提示**
-            > - 手机号 + 短信验证码登录目前有 Bug，**不可用**。
-            > - 本 Release 的安装包**不含云服务配置**（仓库里不能放 key、CI 也没有），
-            >   所以账号页会显示「云服务未配置」，**邮箱登录同样不可用**。
+            > - 手机号 + 短信验证码登录目前有 Bug，**不可用**；**请用「邮箱验证码」登录**（账号页默认停在手机 Tab，需手动切换）。
+            > - 安装包**已内置云服务公开配置**（`wbpk_` 开头的 publishable key，设计上就是随客户端分发的公开值），
+            >   所以邮箱登录开箱可用；数据安全由服务端行级权限（RLS）保证，请不要把该 key 当密钥。
             > - **不登录也能完整使用软件内的全部功能**：词库、学习记录、错词、设置、统计全部存在本地。
 
             - Windows：下载 `woyao-beidanci-Setup-*.exe`，双击安装（未签名，SmartScreen 提示时点「更多信息 → 仍要运行」）。
@@ -100,6 +115,8 @@ jobs:
     # 显式写 macos-14 而不是 macos-latest：dmg 的架构取决于 runner 架构，
     # macos-latest 迁移到别的架构时产物名会跟着变。这一份是**必跑**的。
     runs-on: macos-14
+    env:
+      WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -113,11 +130,18 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 注入云服务公开配置（.env.local）
+        if: env.WB_CLOUD_ENV != ''
+        shell: bash
+        run: |
+          printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+          echo "已写入 .env.local（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键）"
+
       - name: 构建 web 与主进程产物
         run: npm run build
 
-      - name: 生成 dmg（hdiutil，未签名）
-        run: npm run package:dmg
+      - name: 生成 dmg（hdiutil，未签名，内嵌云公开配置）
+        run: npm run package:dmg -- --with-cloud
 
       - name: 汇总产物信息
         run: |
@@ -153,6 +177,8 @@ jobs:
     # README 也如实写了「Intel 版由 CI 尽力构建」这个前提。
     runs-on: macos-13
     continue-on-error: true
+    env:
+      WB_CLOUD_ENV: ${{ secrets.WB_CLOUD_ENV }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -166,11 +192,18 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 注入云服务公开配置（.env.local）
+        if: env.WB_CLOUD_ENV != ''
+        shell: bash
+        run: |
+          printf '%s\n' "$WB_CLOUD_ENV" > .env.local
+          echo "已写入 .env.local（$(grep -c '^VITE_WB_CLOUD_' .env.local) 个 VITE_WB_CLOUD_* 键）"
+
       - name: 构建 web 与主进程产物
         run: npm run build
 
-      - name: 生成 dmg（hdiutil，未签名）
-        run: npm run package:dmg
+      - name: 生成 dmg（hdiutil，未签名，内嵌云公开配置）
+        run: npm run package:dmg -- --with-cloud
 
       - name: 上传产物（workflow artifact）
         uses: actions/upload-artifact@v4

@@ -1,4 +1,4 @@
-# 发布流水线：打 tag（v*）或手动触发时，分别构建 Windows 安装包与 macOS dmg，
+# 发布流水线：打 tag（v* / V*）或手动触发时，分别构建 Windows 安装包与 macOS dmg，
 # 并把产物上传到对应 tag 的 GitHub Release。
 #
 # 三条设计原则：
@@ -13,7 +13,11 @@ name: Release
 on:
   push:
     tags:
+      # GitHub 的 tag 通配符**区分大小写**，而本项目的发布 tag 是 `V1.0`（大写 V）。
+      # 只写 'v*' 的话推 V1.0 不会触发，macOS dmg 就永远产不出来；
+      # 两个都列出来，同时避免用 '*'（那会让任何 tag 都触发整套构建）。
       - 'v*'
+      - 'V*'
   workflow_dispatch:
 
 permissions:
@@ -63,9 +67,15 @@ jobs:
           retention-days: 14
 
       - name: 上传到 Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # 不用 startsWith(github.ref, 'refs/tags/v')：GitHub 的 ref 比较是大小写敏感的，
+        # 那样推 `V1.0` 时这一步会被跳过（构建白跑）。本 workflow 只在打 tag 或手动
+        # 触发时运行，手动触发时 github.ref 是分支引用，下面的判断自然不成立。
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # 必须显式指向当前 tag（如 `V1.0`），否则 action 可能按 tag 名新建一个
+          # 小写的 Release，产物就挂到了另一个 Release 上。
+          tag_name: ${{ github.ref_name }}
           files: |
             release/*.exe
             release/*.exe.sha256
@@ -84,7 +94,9 @@ jobs:
 
   macos-arm64:
     name: macOS dmg（Apple Silicon）
-    runs-on: macos-latest
+    # 显式写 macos-14 而不是 macos-latest：dmg 的架构取决于 runner 架构，
+    # macos-latest 迁移到别的架构时产物名会跟着变。这一份是**必跑**的。
+    runs-on: macos-14
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -120,9 +132,12 @@ jobs:
           retention-days: 14
 
       - name: 上传到 Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # 大小写无关地判断「是不是 tag 触发」（推 `V1.0` 时 refs/tags/v* 的写法匹配不上）。
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # 传到 `V1.0` 这个既有 tag 的 Release，不新建。
+          tag_name: ${{ github.ref_name }}
           files: |
             release/*.dmg
             release/*.dmg.sha256
@@ -130,8 +145,9 @@ jobs:
 
   macos-x64:
     name: macOS dmg（Intel）
-    # Intel 机器（macos-13）在 GitHub 上属于逐步退役的镜像。它挂了不该拖垮整个发布：
-    # 标 continue-on-error，能出包就上传，出不来就在日志里留痕，README 也如实写了这个前提。
+    # Intel 包为「尽力产出」：macos-13 是 GitHub 上逐步退役的 Intel 镜像，随时可能不可用。
+    # 因此它不阻塞发布——标 continue-on-error，能出包就上传，出不来只在日志留痕；
+    # README 也如实写了「Intel 版由 CI 尽力构建」这个前提。
     runs-on: macos-13
     continue-on-error: true
     steps:
@@ -164,9 +180,11 @@ jobs:
           retention-days: 14
 
       - name: 上传到 Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # 同前：tag 判断必须大小写无关，否则 `V1.0` 触发时这一步会被跳过。
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             release/*.dmg
             release/*.dmg.sha256

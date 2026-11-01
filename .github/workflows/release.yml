@@ -2,10 +2,10 @@
 # 并把产物上传到对应 tag 的 GitHub Release。
 #
 # 三条设计原则：
-# 1. **没有任何密钥**。云服务配置走 `.env.local`，它不入库；CI 上没有这个文件，
-#    web 构建按“云未配置”降级（账号页显示未配置，本地学习功能完全不受影响）。
-# 2. **不隐式发布**。不使用 electron-builder 的 `--publish always`，上传只由下面的
-#    `softprops/action-gh-release` 显式完成，权限收紧到 `contents: write`。
+# 1. **密钥不进仓库**。云配置由 secret `WB_CLOUD_ENV` 在构建前写成 `.env.local`（不入库），
+#    打包时用 `--with-cloud` 显式嵌入；secret 未配置时构建照旧成功，只是账号页显示云服务未配置。
+# 2. **不隐式发布**。`scripts/package-desktop.mjs` 显式传 `--publish never`（electron-builder 26
+#    在 tag 上会隐式发布并因缺 `GH_TOKEN` 失败）；上传只由下面的 `softprops/action-gh-release` 完成。
 # 3. **平台各自构建**。Windows 产物只能在 Windows 上产、dmg 只能在 macOS 上产；
 #    每个 job 只做自己平台的事，失败互不牵连（macOS Intel 任务标了 continue-on-error）。
 name: Release

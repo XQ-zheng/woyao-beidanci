@@ -33,15 +33,14 @@
  *   npm run package:dmg                      # macOS：产出 release/woyao-beidanci-<ver>-<arch>.dmg
  *   node scripts/package-desktop.mjs --target=dir     # 只组装、不打包（排查用）
  *   node scripts/package-desktop.mjs --skip-build     # 复用已有 dist 产物
- *   node scripts/package-desktop.mjs --with-cloud     # 把 .env.local 的云配置嵌进包（官方 Release 就这么打）
+ *   node scripts/package-desktop.mjs --with-cloud     # 把 .env.local 的云配置嵌进包（发布流水线会带上它）
  *
  * 两条硬规则（都由本脚本保证，别改成“看有没有文件就写”）：
  * - **永不写** `resources/data-location.json`：运行期的 `resolveDataDir()` 读到它就不再
  *   校验盘符，把打包机的 `E:\...` 烤进去等于让所有没有 E 盘的用户装完打不开；
- * - `resources/cloud-config.json` **只在显式 `--with-cloud` 时写**：仓库里没有 key，
- *   CI 通过 secret `WB_CLOUD_ENV` 注入 `.env.local` 后再加这个开关。
- *   做成显式开关（而不是“有就嵌”）是为了让「这个包到底有没有云配置」由命令决定，
- *   而不是由打包机上恰好存不存在 `.env.local` 决定。
+ * - `resources/cloud-config.json` **默认不嵌**；发布流水线通过 secret `WB_CLOUD_ENV`
+ *   + `--with-cloud` 显式嵌入。做成显式开关（而不是“有就嵌”）是为了让「这个包到底
+ *   有没有云配置」由命令决定，而不是由打包机上恰好存不存在 `.env.local` 决定。
  */
 import { spawnSync } from 'node:child_process';
 import { builtinModules, createRequire } from 'node:module';

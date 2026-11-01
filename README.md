@@ -13,7 +13,7 @@
 
 1. **手机号 + 短信验证码登录路径存在 Bug，当前无法使用。** 即使填了正确的手机号、收到了短信，登录步骤也无法完成。这是一个已知问题，修复后会在这里更新。
 2. **如果你需要登录，请使用「邮箱验证码」登录。** 账号页有两个 Tab，默认停在「手机验证码」上，请手动切到「邮箱验证码」。
-   （补充说明：从 [Releases](../../releases) 下载的官方安装包**没有内置云服务配置**——仓库里不能放 key，CI 也没有。所以这些构建里账号页会显示「云服务未配置」，登录功能整体不可用；自己按[从源码构建](#从源码构建)并在 `.env.local` 里填好云配置后打的包才带登录能力。）
+   （补充说明：从 [Releases](../../releases) 下载的官方安装包**没有内置云服务配置**——仓库里不能放 key，CI 也没有。所以这些构建里账号页会显示「云服务未配置」，登录功能整体不可用；只有自己按[从源码构建](#从源码构建)填好 `.env.local`、并用 `--with-cloud` 打的包才带登录能力。）
 3. **不登录也可以完整使用软件内的全部功能。** 本软件是本地优先的：词库、学习记录、错词、设置、统计全部保存在本机 SQLite 数据库里，登录只影响「云端账号」相关的部分（而云同步目前也尚未接入）。你可以完全不碰账号页。
 
 ---
@@ -75,15 +75,17 @@
 3. 安装包**未做代码签名**，Windows SmartScreen 可能提示「Windows 已保护你的电脑」。点「更多信息」→「仍要运行」即可（源码全部在本仓库，你可以自己构建一份，见[从源码构建](#从源码构建)）。
 4. 卸载：在「设置 → 应用」或「控制面板 → 程序和功能」里卸载。**卸载不会删除你的学习数据。**
 
-**数据存放位置**：
+**数据存放位置**（**由应用在首次启动时自行判断，安装包里不固化任何路径**）：
 
 - Windows 上有 E 盘时，数据默认放在 `E:\我要背单词——相关文件夹`（数据库 `woyao.sqlite3`、日志、本地存储都在这里）。
 - 没有 E 盘时，回退到 Electron 的默认用户数据目录：`%APPDATA%\woyao-beidanci`（即 `C:\Users\<你>\AppData\Roaming\woyao-beidanci`）。
-- 在「设置 → 数据位置」里可以看到当前实际路径，也可以改到别的地方（会复制既有数据过去）。
+- 在「设置 → 数据位置」里可以看到当前实际路径，也可以改到别的地方（会复制既有数据过去）。改过一次之后，这个位置会记录在安装目录的 `resources\data-location.json` 里——**这个文件只会由应用在运行时写入，发布包里没有它**。
 
 ### macOS（Apple Silicon / Intel）
 
-1. 到 [Releases](../../releases) 下载对应架构的 dmg：`woyao-beidanci-x.y.z-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-x.y.z-x64.dmg`（Intel）。两者都由 GitHub Actions 在对应架构的 macOS 机器上构建。
+> **先说清楚：macOS 产物从未被验证过。** 本项目只在 Windows 上有真实的构建、安装与启动记录；dmg 由 GitHub Actions 在 macOS 机器上按同一套脚本组装（复制 `Electron.app` → 改 Info.plist 与二进制名 → `hdiutil` 打包），但**开发者手上没有 macOS 机器，也没有跑过一次 CI**。也就是说：产物可能存在、可能直接跑不起来，下载前请知悉这是「尽力构建」而非「已验证可用」。
+
+1. 到 [Releases](../../releases) 下载对应架构的 dmg：`woyao-beidanci-x.y.z-arm64.dmg`（Apple Silicon）或 `woyao-beidanci-x.y.z-x64.dmg`（Intel）。是否真的存在取决于 CI 那次构建有没有成功（Intel 那份用的是逐步退役的 `macos-13` 镜像，可能直接不可用）。
 2. 打开 dmg，把「我要背单词」拖进「应用程序」。
 3. **本应用未做苹果代码签名与公证（notarization）**，首次打开会被 Gatekeeper 拦下。解决方法任选一个：
    - 在 Finder 里**右键点击应用图标 → 打开 → 再点「打开」**；
@@ -97,8 +99,8 @@
 
 | 平台 | 状态 | 安装包 |
 | --- | --- | --- |
-| Windows 10 / 11 x64 | ✅ 支持 | `woyao-beidanci-Setup-x.y.z.exe`（NSIS 安装版） |
-| macOS（Apple Silicon / Intel） | ⚠️ 可用但未签名 | `woyao-beidanci-x.y.z-arm64.dmg` / `woyao-beidanci-x.y.z-x64.dmg`（未签名、未公证） |
+| Windows 10 / 11 x64 | ✅ 支持（已构建、已启动验证） | `woyao-beidanci-Setup-x.y.z.exe`（NSIS 安装版） |
+| macOS（Apple Silicon / Intel） | ⚠️ 未验证（未签名、未公证、未跑过真机） | `woyao-beidanci-x.y.z-arm64.dmg` / `woyao-beidanci-x.y.z-x64.dmg`——由 CI 尽力构建，可能缺失或无法启动 |
 | Android | ❌ 暂不支持 | 无。应用基于 Electron 桌面架构，主进程承载 SQLite、文件系统与 IPC 桥接；移动端需要重写存储层（换 `@capacitor-community/sqlite`）与整套原生桥，已列入 v1.1 路线图。 |
 | iOS | ❌ 暂不支持 | 无。技术原因同 Android，另外还需要 Apple 开发者账号才能签名分发。 |
 | Linux | ❌ 暂未验证 | 无。源码理论上可构建，但没有做过任何验证，因此不提供产物、也不声称支持。 |
@@ -109,7 +111,7 @@
 
 **本软件在设计上仍然很简陋，存在许多不足。** 这里如实列出，不做美化：
 
-1. **手机号 + 短信验证码登录存在 Bug，当前不可用**，只能走邮箱验证码登录。
+1. **手机号 + 短信验证码登录存在 Bug，当前不可用**（修好后应改用邮箱验证码登录；而下面第 12 条又会说明发布包里连邮箱登录也用不了）。
 2. **云同步没有实现**：账号页的「立即同步」只会提示「云同步尚未接入」。也就是说，两台设备之间**无法同步**学习进度、词库、错词与设置，多设备用户目前只能各背各的。
 3. **导出功能没有接入界面**：服务层已经能生成 Word / PDF / Excel（`docx`、`exceljs`、`pdfkit` 与内置中文字体都已随包分发），但页面上还没有导出按钮，用户拿不到这些文件。
 4. **没有自动更新**：升级只能手动去 Releases 下载新版本覆盖安装。
@@ -120,8 +122,10 @@
 9. **没有移动端**：Android / iOS 都不支持（原因见上表）。
 10. **错误提示偏粗糙**：多数失败场景只给一句「XX 失败：<原始错误>」，没有操作建议，也没有一键重试。
 11. **没有系统通知提醒**：设置里能配学习时段，但到点不会弹系统通知（该能力未实现）。
-12. **官方 Release 安装包不含云服务配置**：仓库里不能放 key、CI 也没有，所以下载版打开账号页只会看到「云服务未配置」，邮箱登录也不可用。想要带登录的包，得自己填 `.env.local` 重新构建。
+12. **官方 Release 安装包不含云服务配置**：仓库里不能放 key、CI 也没有，所以下载版打开账号页只会看到「云服务未配置」，邮箱登录也不可用。想要带登录的包，得自己填 `.env.local` 后用 `--with-cloud` 重新构建。
 13. **云同步缺失导致「记住登录」只能单机生效**，换机器等于重新开始。
+14. **macOS 产物从未被验证**：没有 macOS 机器、也没跑过 CI，dmg 只是「尽力构建」，不保证存在、也不保证能启动（详见上文 macOS 小节）。
+15. **数据目录只在启动时判断一次**：应用启动时若检测到 E 盘就把数据放过去；如果用户之后把 E 盘拔了/改名，启动会因为数据目录不存在而失败——目前没有「引导路径失效自动回退」的保护。
 
 以上问题**后续会持续优化**，优先级与进度见[路线图](#路线图roadmap)。
 
@@ -154,13 +158,16 @@ npm run build          # 构建全部 workspace（web 产物 → dist/apps/web�
 
 # 方式一：安装包（对外发布用，产物落在 release/）
 npm run package:exe    # Windows：release/woyao-beidanci-Setup-<version>.exe（NSIS 安装版）
-npm run package:dmg    # macOS：release/woyao-beidanci-<version>.dmg（需在 macOS 上执行）
+npm run package:dmg    # macOS：release/woyao-beidanci-<version>-<arch>.dmg（需在 macOS 上执行）
 
 # 方式二：只组装、不打包（排查目录结构用）
 npm run package:dir    # build/desktop/<platform>-<arch>/
 
 # 方式三：开发机自用的一键安装（Windows，会覆盖安装到 E:\我要背单词——相关文件夹\程序）
 npm run package:win
+
+# 自用分发：把 .env.local 里的云公共配置嵌进安装包（发布版默认不嵌，见下）
+npm run package:exe -- --with-cloud
 ```
 
 打包脚本说明：
@@ -168,11 +175,17 @@ npm run package:win
 - `scripts/package-desktop.mjs`：跨平台组装 + 出安装包。Windows 分支把 `electron.exe` 改名并交给 electron-builder 打 NSIS；macOS 分支把 `Electron.app` 改成 `我要背单词.app`（改 Info.plist、改二进制名）后用系统 `hdiutil` 生成 dmg，全程零下载。
 - `scripts/package-win.mjs`：保留的本机安装脚本，组装完直接覆盖安装到 `E:\我要背单词——相关文件夹\程序` 并创建快捷方式，不是安装包。
 - 两者都**不使用 asar**：`better-sqlite3` 是原生模块，必须保持未压缩的实体文件，否则加载失败。
+- 发布态的两条固定行为（不是“看有没有文件就写”，否则同一版本在不同机器上产出的包内容会不一样）：
+  1. **不写 `resources/data-location.json`**：运行期读到它就不再校验盘符，把打包机的 `E:\...` 烤进包会让没有 E 盘的用户装完打不开应用；
+  2. **不嵌 `resources/cloud-config.json`**：需要时显式加 `--with-cloud`。
 
 ### 云服务配置（可选）
 
 不配置也能用——只是账号页会显示「云服务未配置」，导入时跳过 AI 补释义。
 需要时可 `cp .env.example .env.local`，填入 WorkBuddy Cloud 的公开配置（`VITE_WB_CLOUD_*`）。
+
+开发态（`npm run dev` / `npm run start --workspace @woyao/electron`）会自动读 `.env.local`；
+打包成安装包时，配置**默认不会**被嵌入（见上一节的「发布态两条固定行为」），要嵌请加 `--with-cloud`。
 
 > **绝对不要把 `.env.local` 提交到仓库**。它已被 `.gitignore` 忽略；仓库里只有 `.env.example` 这种空壳模板。
 > 打包脚本只在 `.env.local` 存在时才把配置写进产物的 `resources/cloud-config.json`，没有就跳过（CI 上不会有）。
@@ -214,7 +227,7 @@ npm run package:win
 
 ## 路线图（Roadmap）
 
-**v1.0（当前）**：Windows 安装包 + macOS dmg，本地学习闭环、内置四/六/考研词库、批量导入、错词与历史统计、水平评估。
+**v1.0（当前，版本号 1.0.0）**：Windows 安装包（已构建、已启动验证）；macOS dmg 由 CI 尽力构建、**尚未验证**。本地学习闭环、内置四/六/考研词库、批量导入、错词与历史统计、水平评估。
 
 **v1.1（计划）**
 

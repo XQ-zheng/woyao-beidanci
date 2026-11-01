@@ -12,7 +12,7 @@
  *   `.env.local` 和 Windows 独有能力，是“给自己装一份”的路径，产物不是安装包。
  * - 本脚本：面向**对外发布**。产物落在仓库 `release/` 下，名字/版本来自
  *   `package.json`，任何一台 Windows / macOS 机器（含 GitHub Actions）都能跑。
- *   它不写 E 盘、不建快捷方式、不读 `.env.local` 就失败——按需降级。
+ *   它不写 E 盘、不建快捷方式；没有 `.env.local` 也能跑（只是包里没有云配置）。
  *
  * 为什么 Windows 安装包用 electron-builder 的 `--prepackaged`：
  * 应用目录的组装规则（web 产物落 `resources/app/dist/web`、原生模块必须是实体文件、
@@ -33,13 +33,15 @@
  *   npm run package:dmg                      # macOS：产出 release/woyao-beidanci-<ver>-<arch>.dmg
  *   node scripts/package-desktop.mjs --target=dir     # 只组装、不打包（排查用）
  *   node scripts/package-desktop.mjs --skip-build     # 复用已有 dist 产物
- *   node scripts/package-desktop.mjs --with-cloud     # 自用分发：把 .env.local 的云配置嵌进包
+ *   node scripts/package-desktop.mjs --with-cloud     # 把 .env.local 的云配置嵌进包（官方 Release 就这么打）
  *
- * 发布包与自用包的两条硬差别（都由本脚本保证，别改成“看有没有文件就写”）：
- * - **不写** `resources/data-location.json`：运行期的 `resolveDataDir()` 读到它就不再
+ * 两条硬规则（都由本脚本保证，别改成“看有没有文件就写”）：
+ * - **永不写** `resources/data-location.json`：运行期的 `resolveDataDir()` 读到它就不再
  *   校验盘符，把打包机的 `E:\...` 烤进去等于让所有没有 E 盘的用户装完打不开；
- * - **不嵌** `resources/cloud-config.json`：仓库里没有 key、CI 也没有，
- *   “有就嵌”会让同一版本在不同机器上产出不同内容的安装包。
+ * - `resources/cloud-config.json` **只在显式 `--with-cloud` 时写**：仓库里没有 key，
+ *   CI 通过 secret `WB_CLOUD_ENV` 注入 `.env.local` 后再加这个开关。
+ *   做成显式开关（而不是“有就嵌”）是为了让「这个包到底有没有云配置」由命令决定，
+ *   而不是由打包机上恰好存不存在 `.env.local` 决定。
  */
 import { spawnSync } from 'node:child_process';
 import { builtinModules, createRequire } from 'node:module';
@@ -448,9 +450,11 @@ function readEnvFile(filePath) {
 /**
  * 读云公共配置（可选）。
  *
- * 与 `package-win.mjs`（缺配置直接失败）不同，发布构建允许没有 `.env.local`：
- * 开源仓库里不能有 key，GitHub Actions 上也不会有；此时产出的安装包打开账号页会
- * 如实显示“云服务未配置”，**本地学习功能完全不受影响**。
+ * 与 `package-win.mjs`（缺配置直接失败）不同，这里允许没有 `.env.local`：
+ * 仓库里不放 key，官方 Release 的配置来自 GitHub Actions secret `WB_CLOUD_ENV`
+ * （被写成 `.env.local` 后由 `--with-cloud` 读走）；fork 后没配 secret 时
+ * `.env.local` 不存在，此时产出的安装包打开账号页会如实显示“云服务未配置”，
+ * **本地学习功能完全不受影响**。
  *
  * @returns {{config: Record<string, string> | null, reason: string}} 配置与说明。
  */
@@ -699,12 +703,15 @@ function ensureNoDataLocationHint(resourcesDir) {
 /**
  * 处理云公共配置（默认**不**嵌入，需显式 `--with-cloud` 才写）。
  *
- * 默认不嵌入的理由：
- * - 仓库里不能有 key，GitHub Actions 上也没有 `.env.local`；如果“有就嵌、没有就跳过”，
- *   同一个版本会因为打包机不同而产出内容不同的安装包，Release 资产不可复现；
- * - README 明确写了「官方 Release 安装包不含云服务配置」，产物必须与这句话一致。
+ * 为什么要显式开关而不是“有 `.env.local` 就嵌”：
+ * 后者会让「这个安装包有没有云配置」取决于打包机上恰好有没有那个文件——
+ * 本地开发和 CI 会产出内容不同的同一版本，Release 资产没法复现，
+ * 也没法在日志里一眼看出“这个包到底带没带”。
  *
- * 需要给内网/自用分发一份带登录能力的包时：
+ * 官方 Release 的配置来源是 GitHub Actions secret `WB_CLOUD_ENV`
+ * （流水线把它写成 `.env.local`，再带 `--with-cloud` 打包）。
+ *
+ * 本机自用/内网分发：
  *   node scripts/package-desktop.mjs --target=exe --with-cloud
  *
  * @param {string} resourcesDir 目标 `resources` 目录。
@@ -716,7 +723,7 @@ function applyCloudConfig(resourcesDir, withCloud) {
     if (existsSync(target)) {
       rmSync(target, { force: true });
     }
-    console.log('  云配置：不嵌入（发布包固定行为；需要登录能力请加 --with-cloud 自行构建）');
+    console.log('  云配置：未加 --with-cloud，不嵌入（账号页会显示云服务未配置，本地功能不受影响）');
     return;
   }
   const { config, reason } = readCloudConfigIfAny();
